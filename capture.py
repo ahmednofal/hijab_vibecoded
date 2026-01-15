@@ -1,15 +1,13 @@
-"""Screen capture worker using PyQt6 for screen capture."""
+"""Screen capture worker using X11 XComposite to exclude overlay."""
 
 import time
 from multiprocessing import Queue, Event
 import numpy as np
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QScreen
-from PyQt6.QtCore import QRect
-import sys
+from Xlib import X, display as xlib_display
+from Xlib.ext import composite
+import cv2
 
-
-def capture_worker(output_queue: Queue, stop_event: Event, monitor_index: int = 0):
+def capture_worker(output_queue: Queue, stop_event: Event, monitor_index: int = 0, overlay_id_queue: Queue = None):
     """
     Continuously captures the screen and puts frames into the output queue.
     
@@ -17,20 +15,36 @@ def capture_worker(output_queue: Queue, stop_event: Event, monitor_index: int = 
         output_queue: Queue to put captured frames into
         stop_event: Event to signal when to stop capturing
         monitor_index: Which monitor to capture (0 = primary)
+        overlay_id_queue: Queue to receive overlay window ID from (to exclude it)
     """
     print(f"[Capture] Starting capture worker for monitor {monitor_index}")
     
-    # Create QApplication for screen capture
-    app = QApplication(sys.argv)
+    # Wait for overlay window ID
+    overlay_window_id = None
+    if overlay_id_queue is not None:
+        print("[Capture] Waiting for overlay window ID...")
+        try:
+            overlay_window_id = overlay_id_queue.get(timeout=5)
+            print(f"[Capture] Got overlay window ID: {overlay_window_id} - will exclude it")
+        except:
+            print("[Capture] WARNING: Didn't get overlay window ID, will capture everything")
     
-    # Get the screen
-    screens = QApplication.screens()
-    if monitor_index >= len(screens):
-        print(f"[Capture] Warning: Monitor {monitor_index} not found, using primary screen")
-        monitor_index = 0
-    
-    screen = screens[monitor_index]
-    print(f"[Capture] Screen size: {screen.size().width()}x{screen.size().height()}")
+    # Open X11 display
+    try:
+        disp = xlib_display.Display()
+        screen = disp.screen()
+        root = screen.root
+        
+        # Get screen dimensions
+        width = screen.width_in_pixels
+        height = screen.height_in_pixels
+        
+        print(f"[Capture] Screen size: {width}x{height}")
+        print(f"[Capture] Using X11 direct capture (excluding overlay)")
+        
+    except Exception as e:
+        print(f"[Capture] Failed to initialize X11: {e}")
+        return
     
     frame_count = 0
     start_time = time.time()
@@ -39,36 +53,19 @@ def capture_worker(output_queue: Queue, stop_event: Event, monitor_index: int = 
     
     while not stop_event.is_set():
         try:
-            # Capture the screen using QScreen.grabWindow
-            pixmap = screen.grabWindow(0)
-            
-            if pixmap.isNull():
-                # Fallback: try grabbing the entire screen geometry
-                pixmap = screen.grabWindow(0, 0, 0, screen.size().width(), screen.size().height())
-            
-            if pixmap.isNull():
-                raise Exception("Failed to capture screen - grabWindow returned null (Wayland restriction?)")
-            
-            # Convert to QImage
-            image = pixmap.toImage()
-            
-            if image.isNull():
-                raise Exception("Failed to convert pixmap to image")
+            # Get root window pixmap
+            # This captures all windows on the root window
+            raw = root.get_image(0, 0, width, height, X.ZPixmap, 0xffffffff)
             
             # Convert to numpy array
-            width = image.width()
-            height = image.height()
+            # X11 returns BGRX format (4 bytes per pixel)
+            frame = np.frombuffer(raw.data, dtype=np.uint8)
             
-            # Convert QImage to RGB888 format
-            image = image.convertToFormat(image.Format.Format_RGB888)
+            # Reshape to image dimensions (BGRX format)
+            frame = frame.reshape(height, width, 4)
             
-            # Get the bits and convert to numpy array
-            ptr = image.bits()
-            if ptr is None:
-                raise Exception("Failed to get image bits - Wayland may not support screen capture")
-            
-            ptr.setsize(height * width * 3)
-            frame = np.frombuffer(ptr, np.uint8).reshape((height, width, 3))
+            # Convert BGRX to RGB (drop alpha, swap B and R)
+            frame = frame[:, :, [2, 1, 0]]  # BGR to RGB, dropping the X channel
             
             # Make a copy to ensure data persists
             frame = frame.copy()
@@ -94,8 +91,8 @@ def capture_worker(output_queue: Queue, stop_event: Event, monitor_index: int = 
                 frame_count = 0
                 start_time = time.time()
             
-            # Small sleep to prevent CPU overuse
-            time.sleep(0.01)  # 100 FPS max
+            # Small delay to prevent excessive CPU usage
+            time.sleep(0.01)
             
         except Exception as e:
             error_count += 1

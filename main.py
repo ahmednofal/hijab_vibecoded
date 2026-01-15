@@ -23,6 +23,7 @@ class HijabOverlay:
         # Queues for inter-process communication
         self.capture_queue = Queue(maxsize=2)
         self.mask_queue = Queue(maxsize=2)
+        self.overlay_id_queue = Queue(maxsize=1)  # For sending overlay window ID
         
         # Event to signal stop
         self.stop_event = Event()
@@ -43,22 +44,21 @@ class HijabOverlay:
         # Check system requirements
         self.check_requirements()
         
-        # TESTING MODE: Enable capture to test if we're capturing our own overlay
-        print("[Main] TESTING MODE: Starting capture worker to test feedback loop")
-        print("[Main] If the red gets darker over time, we're capturing our own overlay (BAD)")
-        print("[Main] If the red stays the same, we're NOT capturing the overlay (GOOD)")
+        # TESTING MODE: Moving rectangle to test feedback loop
+        print("[Main] FEEDBACK LOOP TEST:")
+        print("[Main] - Rectangle moves left to right")
+        print("[Main] - Drawing what we capture as background")
+        print("[Main] - If red fills entire screen = BAD (capturing our overlay)")
+        print("[Main] - If only one red bar moves = GOOD (not capturing overlay)")
         
-        # Start capture worker process
+        # Start capture worker
         print("[Main] Starting capture worker...")
         self.capture_process = Process(
             target=capture_worker,
-            args=(self.capture_queue, self.stop_event, 0),  # Monitor 0 = primary
+            args=(self.capture_queue, self.stop_event, 0, self.overlay_id_queue),
             daemon=True
         )
         self.capture_process.start()
-        
-        # Keep segmentation disabled for now
-        # We'll pass captured frames directly to overlay for visualization
         
         # Setup signal handler for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -69,7 +69,7 @@ class HijabOverlay:
         
         # Run overlay in main thread (Qt requires main thread)
         try:
-            run_overlay(self.mask_queue)
+            run_overlay(self.mask_queue, self.capture_queue, self.overlay_id_queue)
         except KeyboardInterrupt:
             print("\n[Main] Keyboard interrupt received")
         except Exception as e:
