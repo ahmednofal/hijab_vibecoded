@@ -1,11 +1,11 @@
-"""Screen capture worker using X11 XComposite to exclude overlay."""
+"""Screen capture worker using X11 to exclude overlay window."""
 
 import time
 from multiprocessing import Queue, Event
 import numpy as np
 from Xlib import X, display as xlib_display
-from Xlib.ext import composite
-import cv2
+from PIL import Image
+import io
 
 def capture_worker(output_queue: Queue, stop_event: Event, monitor_index: int = 0, overlay_id_queue: Queue = None):
     """
@@ -51,10 +51,14 @@ def capture_worker(output_queue: Queue, stop_event: Event, monitor_index: int = 
     error_count = 0
     max_consecutive_errors = 10
     
+    frame_count = 0
+    start_time = time.time()
+    error_count = 0
+    max_consecutive_errors = 10
+    
     while not stop_event.is_set():
         try:
-            # Get root window pixmap
-            # This captures all windows on the root window
+            # Get root window image
             raw = root.get_image(0, 0, width, height, X.ZPixmap, 0xffffffff)
             
             # Convert to numpy array
@@ -69,6 +73,24 @@ def capture_worker(output_queue: Queue, stop_event: Event, monitor_index: int = 
             
             # Make a copy to ensure data persists
             frame = frame.copy()
+            
+            # If we have the overlay window ID, black out that window area
+            if overlay_window_id:
+                try:
+                    overlay_win = disp.create_resource_object('window', overlay_window_id)
+                    geom = overlay_win.get_geometry()
+                    # Black out the overlay window area
+                    x, y, w, h = geom.x, geom.y, geom.width, geom.height
+                    # Clamp to screen bounds
+                    x = max(0, x)
+                    y = max(0, y)
+                    w = min(w, width - x)
+                    h = min(h, height - y)
+                    if w > 0 and h > 0:
+                        frame[y:y+h, x:x+w] = 0  # Black out overlay region
+                except Exception as e:
+                    # If we can't get overlay geometry, just continue
+                    pass
             
             # Try to put frame in queue (non-blocking)
             try:
