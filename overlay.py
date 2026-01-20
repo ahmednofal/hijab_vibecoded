@@ -11,15 +11,18 @@ import sys
 class TransparentOverlay(QWidget):
     """Fullscreen transparent overlay that renders person masks in red."""
     
-    def __init__(self, mask_queue: Queue, capture_queue: Queue = None):
+    def __init__(self, mask_queue: Queue, capture_queue: Queue = None, screen_index: int = 0, hide_signal_queue: Queue = None):
         super().__init__()
         self.mask_queue = mask_queue
         self.capture_queue = capture_queue
+        self.screen_index = screen_index
+        self.hide_signal_queue = hide_signal_queue  # Signal from capture worker to hide
         self.current_mask = None
         self.current_frame = None
         self.screen_geometry = None
         self.rect_x_offset = 0  # For moving rectangle test
         self.rect_width = 200
+        self._hidden_for_capture = False
         
         self.init_ui()
         
@@ -32,24 +35,32 @@ class TransparentOverlay(QWidget):
     
     def init_ui(self):
         """Initialize the overlay window."""
-        # Get screen geometry
-        screen = QApplication.primaryScreen()
+        # Get screen geometry for the specific monitor
+        screens = QApplication.screens()
+        if self.screen_index < len(screens):
+            screen = screens[self.screen_index]
+            print(f"[Overlay] Using screen {self.screen_index}: {screen.name()}")
+        else:
+            screen = QApplication.primaryScreen()
+            print(f"[Overlay] Screen {self.screen_index} not found, using primary")
+        
         self.screen_geometry = screen.geometry()
         
         # Set window flags for transparent, always-on-top, frameless window
+        # Note: X11BypassWindowManagerHint doesn't work on Wayland
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
             Qt.WindowType.Tool |
-            Qt.WindowType.X11BypassWindowManagerHint |
             Qt.WindowType.WindowTransparentForInput  # This is key for input passthrough
         )
         
-        # Enable transparency
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        # Enable transparency - this is crucial
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         
         # Make window click-through (input passthrough)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         
         # Additional attribute for complete input passthrough
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -66,11 +77,22 @@ class TransparentOverlay(QWidget):
     def update_mask(self):
         """Try to get the latest mask from the queue."""
         try:
+            # Check if capture worker wants us to hide
+            if self.hide_signal_queue is not None:
+                while not self.hide_signal_queue.empty():
+                    signal = self.hide_signal_queue.get_nowait()
+                    if signal == 'hide':
+                        self._hidden_for_capture = True
+                        self.hide()
+                    elif signal == 'show':
+                        self._hidden_for_capture = False
+                        self.showFullScreen()
+            
             # Get latest mask (non-blocking)
             while not self.mask_queue.empty():
                 self.current_mask = self.mask_queue.get_nowait()
             
-            # Get captured frame if available
+            # Get captured frame if available (for verification, not display)
             if self.capture_queue is not None:
                 got_frame = False
                 while not self.capture_queue.empty():
@@ -86,10 +108,11 @@ class TransparentOverlay(QWidget):
                     print(f"[Overlay] Frame mean value: {mean_val:.2f} (0=black, 255=white)")
                     print(f"[Overlay] Frame min: {self.current_frame.min()}, max: {self.current_frame.max()}")
             
-            # Move rectangle to the right
-            self.rect_x_offset += 5
-            if self.rect_x_offset > self.screen_geometry.width():
-                self.rect_x_offset = 0
+            # Move rectangle to the right (only when visible)
+            if not self._hidden_for_capture:
+                self.rect_x_offset += 5
+                if self.rect_x_offset > self.screen_geometry.width():
+                    self.rect_x_offset = 0
             
             # Trigger repaint
             self.update()
@@ -105,37 +128,14 @@ class TransparentOverlay(QWidget):
             screen_width = self.screen_geometry.width()
             screen_height = self.screen_geometry.height()
             
-            # Draw captured frame as background (if available)
-            if self.current_frame is not None:
-                try:
-                    frame_height, frame_width = self.current_frame.shape[:2]
-                    frame_copy = self.current_frame.copy()
-                    
-                    bytes_per_line = frame_width * 3
-                    q_image = QImage(
-                        frame_copy.data,
-                        frame_width,
-                        frame_height,
-                        bytes_per_line,
-                        QImage.Format.Format_RGB888
-                    ).copy()
-                    
-                    pixmap = QPixmap.fromImage(q_image)
-                    pixmap = pixmap.scaled(
-                        screen_width,
-                        screen_height,
-                        Qt.AspectRatioMode.IgnoreAspectRatio,
-                        Qt.TransformationMode.FastTransformation
-                    )
-                    
-                    painter.drawPixmap(0, 0, pixmap)
-                except Exception as e:
-                    print(f"[Overlay] Error drawing frame: {e}")
-            else:
-                # Draw dark gray background if no frame yet
-                painter.fillRect(0, 0, screen_width, screen_height, QColor(40, 40, 40))
+            # Explicitly clear with transparent color
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+            painter.fillRect(0, 0, screen_width, screen_height, Qt.GlobalColor.transparent)
             
-            # Draw moving red rectangle
+            # Reset to normal composition mode for drawing
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+            
+            # Draw moving red rectangle (semi-transparent)
             painter.fillRect(
                 self.rect_x_offset, 0,  # x, y
                 self.rect_width, screen_height,  # width, height
@@ -154,7 +154,7 @@ class TransparentOverlay(QWidget):
         event.accept()
 
 
-def run_overlay(mask_queue: Queue, capture_queue: Queue = None, overlay_id_queue: Queue = None):
+def run_overlay(mask_queue: Queue, capture_queue: Queue = None, overlay_id_queue: Queue = None, screen_index: int = 0, hide_signal_queue: Queue = None):
     """
     Run the overlay window in the main thread.
     
@@ -162,12 +162,14 @@ def run_overlay(mask_queue: Queue, capture_queue: Queue = None, overlay_id_queue
         mask_queue: Queue to receive segmentation masks from
         capture_queue: Queue to receive captured frames from
         overlay_id_queue: Queue to send overlay window ID to capture worker
+        screen_index: Which monitor to display overlay on (0=primary)
+        hide_signal_queue: Queue to receive hide/show signals from capture worker
     """
     app = QApplication(sys.argv)
     
     print("[Overlay] Starting overlay application")
     
-    overlay = TransparentOverlay(mask_queue, capture_queue)
+    overlay = TransparentOverlay(mask_queue, capture_queue, screen_index, hide_signal_queue)
     overlay.showFullScreen()
     
     # Send overlay window ID to capture worker so it can exclude it
