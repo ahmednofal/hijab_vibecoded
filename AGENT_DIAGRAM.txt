@@ -1,0 +1,198 @@
+╔═══════════════════════════════════════════════════════════════════════╗
+║                    HIJAB OVERLAY TESTING SYSTEM                       ║
+║                   Split Agent Architecture v2.0                       ║
+╚═══════════════════════════════════════════════════════════════════════╝
+
+┌───────────────────────────────────────────────────────────────────────┐
+│                      TEST ORCHESTRATOR                                │
+│                  (run_integrated_test.py)                             │
+│                                                                        │
+│  • Detects display server (X11/Wayland)                              │
+│  • Starts appropriate overlay backend                                 │
+│  • Launches CV monitor in separate process                           │
+│  • Collects results from all agents                                  │
+│  • Performs final analysis                                           │
+│  • Outputs pass/fail verdict                                         │
+└────────┬──────────────────────────┬──────────────────────┬────────────┘
+         │                          │                      │
+         │                          │                      │
+    ┌────▼──────┐          ┌────────▼────────┐    ┌───────▼─────────┐
+    │  AGENT 1  │          │    AGENT 2      │    │    AGENT 3      │
+    │           │          │                 │    │                 │
+    │ CV Monitor│          │  X11 Specialist │    │Wayland Specialist│
+    │           │          │                 │    │                 │
+    │ ╔════════╗│          │   ╔══════════╗  │    │  ╔═══════════╗  │
+    │ ║Computer║│          │   ║   X11    ║  │    │  ║  Wayland  ║  │
+    │ ║ Vision ║│          │   ║  Window  ║  │    │  ║   Layer   ║  │
+    │ ║Monitoring║          │   ║ Manager  ║  │    │  ║   Shell   ║  │
+    │ ╚════════╝│          │   ╚══════════╝  │    │  ╚═══════════╝  │
+    │           │          │                 │    │                 │
+    │ Features: │          │  Features:      │    │  Features:      │
+    │  • Runs   │          │   • Xlib hints  │    │   • Layer proto │
+    │    separate│          │   • Bypass WM  │    │   • GTK/Cairo   │
+    │  • 15s dur│          │   • X11 props   │    │   • Compositor  │
+    │  • 10 FPS │          │   • PyQt6 based │    │   • Input pass  │
+    │  • CV     │          │   • Native X11  │    │   • Native Wayl │
+    │    analysis│          │                 │    │                 │
+    │           │          │                 │    │                 │
+    │ Outputs:  │          │  Outputs:       │    │  Outputs:       │
+    │  • Metrics│          │   • Overlay win │    │   • Overlay win │
+    │  • Movement│          │   • Transparent│    │   • Transparent │
+    │  • Feedback│          │   • Input pass │    │   • Input pass  │
+    │  • Quality│          │   • Always top  │    │   • Layer-based │
+    └───────────┘          └─────────────────┘    └─────────────────┘
+
+═══════════════════════════════════════════════════════════════════════
+
+                          DATA FLOW DIAGRAM
+
+┌─────────────┐
+│ Start Test  │
+└──────┬──────┘
+       │
+       ▼
+┌──────────────────────────────────────┐
+│ 1. Detect Display Server             │
+│    • Check XDG_SESSION_TYPE          │
+│    • x11 → Use Agent 2               │
+│    • wayland → Use Agent 3           │
+└──────┬───────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────────┐
+│ 2. Start Overlay Process             │
+│    • Fork overlay with backend       │
+│    • Initialize window                │
+│    • Begin animation (30 FPS)        │
+└──────┬───────────────────────────────┘
+       │
+       │    ┌─────────────────────────┐
+       ├───►│ 3. Start CV Monitor     │
+       │    │    (Separate Process)   │
+       │    │                         │
+       │    │  • Capture @ 10 FPS     │
+       │    │  • Analyze each frame   │
+       │    │  • Extract metrics      │
+       │    │  • Track movement       │
+       │    │  • Detect patterns      │
+       │    └──────┬──────────────────┘
+       │           │
+       ▼           ▼
+┌──────────────────────────────────────┐
+│ 4. Run for 15 seconds                │
+│    • Overlay animates independently  │
+│    • Monitor captures independently  │
+│    • No interference between them    │
+└──────┬───────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────────┐
+│ 5. Collect Results                   │
+│    • Stop overlay process            │
+│    • Gather CV metrics               │
+│    • Combine all data                │
+└──────┬───────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────────┐
+│ 6. Analyze Results                   │
+│    ✓ Movement test                   │
+│    ✓ Feedback loop test              │
+│    ✓ Visual output test              │
+│    ✓ Red overlay test                │
+└──────┬───────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────────┐
+│ 7. Report Results                    │
+│    • Terminal: Human-readable        │
+│    • JSON: Machine-readable          │
+│    • Exit code: 0=pass, 1=fail       │
+└──────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════
+
+                      MONITORING VS DRAWING
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                    OVERLAY DRAWING LOOP                             │
+│                      (30 FPS - 33ms)                                │
+│                                                                     │
+│  Process: main.py → overlay agent                                  │
+│                                                                     │
+│  while running:                                                    │
+│    ┌────────────────────────┐                                     │
+│    │ Update animation       │  33ms cycle                         │
+│    │ rect_x += 5            │  ◄─────────┐                       │
+│    ├────────────────────────┤            │                        │
+│    │ Trigger repaint        │            │                        │
+│    │ draw(red_rectangle)    │            │                        │
+│    ├────────────────────────┤            │                        │
+│    │ Schedule next update   │ ───────────┘                        │
+│    └────────────────────────┘                                     │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+
+                              ║
+                              ║ INDEPENDENT - NO COUPLING
+                              ║
+                              ▼
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                   CV MONITORING LOOP                                │
+│                     (10 FPS - 100ms)                                │
+│                                                                     │
+│  Process: separate → test_cv_monitor.py                            │
+│                                                                     │
+│  for duration (15s):                                               │
+│    ┌────────────────────────┐                                     │
+│    │ Capture screen         │  100ms cycle                        │
+│    │ frame = screenshot()   │  ◄─────────┐                       │
+│    ├────────────────────────┤            │                        │
+│    │ Analyze frame          │            │                        │
+│    │ - Red pixels           │            │                        │
+│    │ - Rectangles           │            │                        │
+│    │ - Movement             │            │                        │
+│    │ - Quality checks       │            │                        │
+│    ├────────────────────────┤            │                        │
+│    │ Store metrics          │            │                        │
+│    │ results.append()       │            │                        │
+│    ├────────────────────────┤            │                        │
+│    │ Sleep 100ms            │ ───────────┘                        │
+│    └────────────────────────┘                                     │
+│                                                                     │
+│  analyze_all_metrics()                                             │
+│  return final_results                                              │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════
+
+                         KEY BENEFITS
+
+✓ SEPARATION OF CONCERNS
+  • Testing separate from rendering
+  • X11 optimization separate from Wayland
+  • Each agent has single responsibility
+
+✓ INDEPENDENCE  
+  • CV monitor doesn't slow down drawing
+  • Agents can be developed in parallel
+  • Easy to test each component
+
+✓ CONFIGURABILITY
+  • 15s default, adjustable via --duration
+  • Force specific backend via --backend
+  • Verbose mode for debugging
+
+✓ EXTENSIBILITY
+  • Add new backends easily
+  • Extend CV metrics independently
+  • New test criteria without changing overlay
+
+✓ RELIABILITY
+  • Numerical metrics (not subjective)
+  • Reproducible results
+  • CI/CD integration ready
+
+═══════════════════════════════════════════════════════════════════════

@@ -25,17 +25,14 @@ class TransparentOverlay(Gtk.Window):
         self.rect_width = 200
         self.screen_width = 1920
         self.screen_height = 1080
-        self.background_image = background_image  # Pre-captured background
-        self.background_surface = None
         
         self._init_transparency()
         self._init_window()
-        self._init_background_surface()
         
         # Animation timer
         GLib.timeout_add(33, self._on_tick)  # ~30 FPS
         
-        print("[Overlay] GTK3 overlay initialized")
+        print("[Overlay] GTK3 transparent overlay initialized")
     
     def _init_background_surface(self):
         """Convert background image to Cairo surface."""
@@ -94,13 +91,21 @@ class TransparentOverlay(Gtk.Window):
             self.monitor_x = geometry.x
             self.monitor_y = geometry.y
             print(f"[Overlay] Target monitor {self.screen_index}: {self.screen_width}x{self.screen_height} at ({self.monitor_x}, {self.monitor_y})")
+        else:
+            self.monitor_x = 0
+            self.monitor_y = 0
         
-        # Window properties
+        # Window properties - make it invisible to window manager
         self.set_decorated(False)
+        self.set_type_hint(Gdk.WindowTypeHint.DOCK)  # Act like a dock/panel, not a window
         self.set_keep_above(True)
         self.set_accept_focus(False)
         self.set_skip_taskbar_hint(True)
         self.set_skip_pager_hint(True)
+        
+        # Position and size manually (don't use fullscreen)
+        self.move(self.monitor_x, self.monitor_y)
+        self.resize(self.screen_width, self.screen_height)
         
         # Make click-through (input passthrough)
         self.set_can_focus(False)
@@ -161,32 +166,12 @@ class TransparentOverlay(Gtk.Window):
         return True  # Keep timer running
     
     def _on_draw(self, widget, cr):
-        """Draw handler - paint pre-captured background with red overlay."""
-        # Draw pre-captured background image
-        if self.background_surface is not None:
-            cr.set_operator(cairo.OPERATOR_SOURCE)
-            
-            # Scale to fit screen if needed
-            bg_width = self.background_surface.get_width()
-            bg_height = self.background_surface.get_height()
-            
-            if bg_width != self.screen_width or bg_height != self.screen_height:
-                scale_x = self.screen_width / bg_width
-                scale_y = self.screen_height / bg_height
-                cr.scale(scale_x, scale_y)
-            
-            cr.set_source_surface(self.background_surface, 0, 0)
-            cr.paint()
-            
-            # Reset transform
-            cr.identity_matrix()
-        else:
-            # Fallback: black background
-            cr.set_source_rgba(0.1, 0.1, 0.1, 1.0)
-            cr.set_operator(cairo.OPERATOR_SOURCE)
-            cr.paint()
+        """Draw handler - fully transparent with only red rectangle visible."""
+        # Clear to fully transparent
+        cr.set_operator(cairo.OPERATOR_CLEAR)
+        cr.paint()
         
-        # Draw red rectangle on top
+        # Draw only the red rectangle
         cr.set_operator(cairo.OPERATOR_OVER)
         cr.set_source_rgba(1.0, 0.0, 0.0, 0.7)  # Red with 70% opacity
         cr.rectangle(self.rect_x_offset, 0, self.rect_width, self.screen_height)
@@ -213,15 +198,9 @@ def run_overlay(mask_queue: Queue, capture_queue: Queue = None, overlay_id_queue
     overlay = TransparentOverlay(mask_queue, capture_queue, screen_index, background_image)
     overlay.connect('destroy', Gtk.main_quit)
     
-    # Show first, then fullscreen on specific monitor
+    # Show the overlay (positioned and sized in init_window)
     overlay.show_all()
-    
-    # Fullscreen on the target monitor specifically
-    if overlay.target_monitor is not None:
-        overlay.fullscreen_on_monitor(overlay.get_screen(), screen_index)
-        print(f"[Overlay] Fullscreened on monitor {screen_index}")
-    else:
-        overlay.fullscreen()
+    print(f"[Overlay] Overlay shown on monitor {screen_index}")
     
     # Send window ID if requested (may not work on pure Wayland)
     if overlay_id_queue is not None:

@@ -1,0 +1,70 @@
+╔══════════════════════════════════════════════════════════════════════════╗
+║                  VISUAL TESTING SYSTEM - QUICK REFERENCE                 ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ QUICK START                                                              │
+└──────────────────────────────────────────────────────────────────────────┘
+
+  Run complete test:        ./run_tests.sh
+  View results:             python3 test_analyzer.py
+  Check tools available:    which scrot grim gnome-screenshot
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ WHAT IT DOES                                                             │
+└──────────────────────────────────────────────────────────────────────────┘
+
+  1. Launches main.py
+  2. Spawns X11 and Wayland test agents
+  3. Captures screen every 0.5 seconds for 15 seconds
+  4. Analyzes for red overlay, movement, animation
+  5. Kills main.py after 15 seconds
+  6. Saves JSON results
+  7. Displays feedback
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ KEY METRICS                                                              │
+└──────────────────────────────────────────────────────────────────────────┘
+
+  Detection Rate:   % of frames with red overlay
+                    Good: >80%, Moderate: 50-80%, Poor: <50%
+
+  Animation:        Average pixel movement per frame
+                    Working: >5px, Minimal: 2-5px, Broken: 0px
+
+  Coverage:         % of screen covered by overlay
+                    Expected: 5-20%, Warning: <5% or >50%
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ COMMANDS                                                                 │
+└──────────────────────────────────────────────────────────────────────────┘
+
+  # Run complete test
+  ./run_tests.sh
+
+  # Run manually
+  python3 test_orchestrator.py
+  python3 test_analyzer.py
+
+  # View JSON results
+  cat test_results_x11.json | jq
+  cat test_results_wayland.json | jq '.summary'
+
+  # Test main program separately
+  python3 main.py
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ SUCCESS INDICATORS                                                       │
+└──────────────────────────────────────────────────────────────────────────┘
+
+  ✓ Detection rate >80%
+  ✓ Animation detected (>5px movement)
+  ✓ Coverage 5-20%
+  ✓ Similar X11/Wayland results
+  ✓ No crashes during 15 seconds
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║  Quick Start: ./run_tests.sh                                            ║
+║  Documentation: TESTING_COMPLETE.md                                     ║
+║  Status: ✅ READY TO USE                                                ║
+╚══════════════════════════════════════════════════════════════════════════╝

@@ -1,0 +1,134 @@
+╔═══════════════════════════════════════════════════════════════════╗
+║             HIJAB OVERLAY - TESTING QUICK REFERENCE               ║
+╚═══════════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ AGENTS                                                              │
+├─────────────────────────────────────────────────────────────────────┤
+│ 1. CV Monitor      → test_cv_monitor.py    (testing/metrics)       │
+│ 2. X11 Agent       → overlay_x11.py        (X11 overlay)           │
+│ 3. Wayland Agent   → overlay_wayland.py    (Wayland overlay)       │
+│ 4. Orchestrator    → run_integrated_test.py (coordination)         │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ BASIC COMMANDS                                                      │
+├─────────────────────────────────────────────────────────────────────┤
+│ Run test (auto-detect):                                            │
+│   python run_integrated_test.py                                    │
+│                                                                     │
+│ Extended test (30s):                                               │
+│   python run_integrated_test.py --duration 30                      │
+│                                                                     │
+│ Force X11:                                                         │
+│   python run_integrated_test.py --backend x11                      │
+│                                                                     │
+│ Force Wayland:                                                     │
+│   python run_integrated_test.py --backend wayland                  │
+│                                                                     │
+│ Verbose + JSON output:                                             │
+│   python run_integrated_test.py -v --output results.json           │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ TESTS PERFORMED                                                     │
+├─────────────────────────────────────────────────────────────────────┤
+│ ✓ Movement          - Rectangle moves (displacement tracking)      │
+│ ✓ No Feedback Loop  - Only 1 rectangle (not capturing self)        │
+│ ✓ Visual Output     - Real content visible (not black screen)      │
+│ ✓ Red Overlay       - Red pixels detected (rendering works)        │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ DOCUMENTATION                                                       │
+├─────────────────────────────────────────────────────────────────────┤
+│ Quick Start:        QUICK_START_TESTING.md                         │
+│ Architecture:       TESTING_ARCHITECTURE.md                        │
+│ Work Allocation:    WORK_ALLOCATION.md                             │
+│ Implementation:     IMPLEMENTATION_SUMMARY.md                      │
+│ Diagrams:           AGENT_DIAGRAM.txt                              │
+│ Files Summary:      NEW_FILES_SUMMARY.md                           │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ DEPENDENCIES                                                        │
+├─────────────────────────────────────────────────────────────────────┤
+│ Python packages:                                                    │
+│   pip install PyQt6 opencv-python scikit-image numpy               │
+│                                                                     │
+│ Wayland support (optional):                                        │
+│   sudo apt install python3-gi gir1.2-gtk-3.0 \                     │
+│                    gir1.2-gtklayershell-0.1                         │
+│                                                                     │
+│ X11 support (optional):                                            │
+│   pip install python-xlib                                          │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ EXAMPLE OUTPUT                                                      │
+├─────────────────────────────────────────────────────────────────────┤
+│ ✓✓✓ ALL TESTS PASSED ✓✓✓                                          │
+│                                                                     │
+│ ✓ PASS - movement                                                  │
+│        Avg displacement: 25.43 px                                  │
+│ ✓ PASS - no_feedback_loop                                          │
+│        Max rectangles: 1                                           │
+│ ✓ PASS - visual_output                                             │
+│        Edge detection: 12.34%                                      │
+│        Avg intensity: 128.5                                        │
+│ ✓ PASS - red_overlay                                               │
+│        Detection rate: 98.5%                                       │
+│        Frames with red: 147/149                                    │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ KEY FEATURES                                                        │
+├─────────────────────────────────────────────────────────────────────┤
+│ • Visual → Numerical (CV techniques)                               │
+│ • Separate monitoring task (not in drawing loop)                   │
+│ • 15 second duration (configurable)                                │
+│ • X11 and Wayland specialist agents                                │
+│ • Auto-detection of display server                                 │
+│ • JSON output for automation                                       │
+│ • Exit codes for CI/CD (0=pass, 1=fail)                            │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ TROUBLESHOOTING                                                     │
+├─────────────────────────────────────────────────────────────────────┤
+│ Movement test fails:                                               │
+│   → Rectangle not moving, check animation logic                    │
+│                                                                     │
+│ Feedback loop detected:                                            │
+│   → Overlay capturing itself, check window exclusion              │
+│                                                                     │
+│ Visual output fails:                                               │
+│   → Screen capture broken, check PyQt6/permissions                 │
+│                                                                     │
+│ Red overlay fails:                                                 │
+│   → Overlay not visible, check compositor/transparency             │
+│                                                                     │
+│ Backend won't start:                                               │
+│   → Check dependencies, try different backend                      │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ FILE STRUCTURE                                                      │
+├─────────────────────────────────────────────────────────────────────┤
+│ hijab_by_copilot/                                                  │
+│ ├── test_cv_monitor.py         (CV agent)                          │
+│ ├── overlay_x11.py              (X11 agent)                        │
+│ ├── overlay_wayland.py          (Wayland agent)                    │
+│ ├── run_integrated_test.py      (orchestrator)                     │
+│ ├── main.py                     (main app - modified)              │
+│ ├── TESTING_ARCHITECTURE.md     (detailed docs)                    │
+│ ├── QUICK_START_TESTING.md      (quick guide)                      │
+│ ├── WORK_ALLOCATION.md          (agent allocation)                 │
+│ ├── AGENT_DIAGRAM.txt           (visual diagrams)                  │
+│ ├── IMPLEMENTATION_SUMMARY.md   (summary)                          │
+│ └── NEW_FILES_SUMMARY.md        (file list)                        │
+└─────────────────────────────────────────────────────────────────────┘
+
+╔═══════════════════════════════════════════════════════════════════╗
+║                     READY TO USE! ✓                               ║
+╚═══════════════════════════════════════════════════════════════════╝

@@ -16,6 +16,8 @@ from capture import capture_worker, is_wayland
 # Import overlay types
 from overlay import run_overlay as run_overlay_qt
 from overlay_gtk3 import run_overlay as run_overlay_gtk3
+from overlay_x11 import run_overlay_x11
+from overlay_wayland import run_overlay_wayland
 # Temporarily commented out to bypass segmentation issues
 # from segmentation import segmentation_worker
 
@@ -106,24 +108,18 @@ class HijabOverlay:
             print(f"[Main] Monitor geometry: x={monitor_geometry[0]}, y={monitor_geometry[1]}, {monitor_geometry[2]}x{monitor_geometry[3]}")
         print()
         
-        # Capture background BEFORE showing overlay (for Wayland)
+        # Capture initial background for Wayland (will be refreshed periodically)
+        # No need to capture background - we want true transparency
         background_image = None
-        if is_wayland() and monitor_geometry:
-            print("[Main] Capturing background before showing overlay...")
-            from capture import capture_wayland_gnome
-            background_image = capture_wayland_gnome(monitor_geometry)
-            if background_image is not None:
-                print(f"[Main] Background captured: {background_image.shape}")
-            else:
-                print("[Main] WARNING: Failed to capture background")
         
-        # TESTING MODE: Moving rectangle to test feedback loop
+        # TESTING MODE: Moving rectangle
         print("[Main] OVERLAY TEST:")
-        print("[Main] - Rectangle moves left to right")
-        print("[Main] - Background is pre-captured (static)")
-        print("[Main] - Red bar should move over the frozen background")
+        print("[Main] - Transparent overlay (actual desktop shows through)")
+        print("[Main] - Red rectangle moves left to right")
+        print("[Main] - Clicks and keyboard input pass through")
+        print("[Main] - Not visible in Alt-Tab")
         
-        # Start capture worker (for future live capture / verification)
+        # Start capture worker (for future segmentation pipeline)
         print("[Main] Starting capture worker...")
         self.capture_process = Process(
             target=capture_worker,
@@ -139,14 +135,36 @@ class HijabOverlay:
         print("[Main] Starting overlay window...")
         print()
         
-        # Use GTK3 on Wayland with pre-captured background
+        # Select overlay backend based on environment or auto-detect
+        backend = os.environ.get('OVERLAY_BACKEND', 'auto').lower()
+        
+        if backend == 'auto':
+            backend = 'wayland' if is_wayland() else 'x11'
+        
+        print(f"[Main] Selected overlay backend: {backend}")
+        
+        # Use appropriate overlay implementation
         try:
-            if is_wayland():
-                print("[Main] Using GTK3 overlay with pre-captured background")
+            if backend == 'x11':
+                print("[Main] Using X11-optimized overlay")
+                run_overlay_x11(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue)
+            elif backend == 'wayland':
+                print("[Main] Using Wayland-optimized overlay")
+                run_overlay_wayland(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue)
+            elif backend == 'gtk':
+                print("[Main] Using GTK3 overlay")
                 run_overlay_gtk3(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue, background_image)
-            else:
+            elif backend == 'qt':
                 print("[Main] Using PyQt6 overlay")
                 run_overlay_qt(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue)
+            else:
+                print(f"[Main] Unknown backend '{backend}', using auto-detect")
+                if is_wayland():
+                    print("[Main] Using Wayland-optimized overlay")
+                    run_overlay_wayland(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue)
+                else:
+                    print("[Main] Using X11-optimized overlay")
+                    run_overlay_x11(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue)
         except KeyboardInterrupt:
             print("\n[Main] Keyboard interrupt received")
         except Exception as e:

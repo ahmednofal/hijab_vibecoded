@@ -1,0 +1,205 @@
+VISUAL TESTING SYSTEM ARCHITECTURE
+====================================
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                         USER INVOKES                                 │
+│                      ./run_tests.sh                                  │
+└────────────────────────────────┬────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    TEST ORCHESTRATOR                                 │
+│                  (test_orchestrator.py)                              │
+│                                                                       │
+│  1. Detect display server (X11/Wayland)                             │
+│  2. Check for capture tools (scrot/grim/etc)                        │
+│  3. Launch main.py → get PID                                        │
+│  4. Wait 2s for initialization                                      │
+│  5. Spawn test agent(s) with PID                                    │
+│  6. Monitor output from agents                                      │
+│  7. Ensure cleanup after completion                                 │
+└────────────────────────┬────────────────┬────────────────────────────┘
+                         │                │
+         ┌───────────────┴────────┐       └───────────────┐
+         │                        │                       │
+         ▼                        ▼                       ▼
+┌─────────────────┐     ┌──────────────────┐   ┌──────────────────┐
+│  MAIN PROGRAM   │     │  X11 TEST AGENT  │   │ WAYLAND TEST     │
+│   (main.py)     │     │ (test_agent_x11) │   │ AGENT            │
+│                 │     │                  │   │ (test_agent_     │
+│  Renders:       │     │  Tools:          │   │  wayland)        │
+│  - Red overlay  │     │  • scrot         │   │                  │
+│  - Moving rect  │     │  • import        │   │  Tools:          │
+│  - Transparent  │     │                  │   │  • grim          │
+│  - Input pass-  │     │  Every 0.5s:     │   │  • gnome-        │
+│    through      │     │  1. Capture      │   │    screenshot    │
+│                 │     │     screen       │   │  • spectacle     │
+│  Backend:       │     │  2. Detect red   │   │                  │
+│  • overlay_x11  │     │  3. Track        │   │  Every 0.5s:     │
+│  • overlay_     │     │     movement     │   │  1. Capture      │
+│    wayland      │     │  4. Calculate    │   │     screen       │
+│                 │     │     metrics      │   │  2. Detect red   │
+│  PID: 12345 ◄───┼─────┤  5. Store data   │   │  3. Track        │
+│                 │     │                  │   │     movement     │
+│  Runs until:    │     │  Duration: 15s   │   │  4. Calculate    │
+│  • Killed by    │     │                  │   │     metrics      │
+│    agent        │     │  After 15s:      │   │  5. Store data   │
+│  • User Ctrl+C  │     │  • Save JSON     │   │                  │
+│  • Crash        │     │  • Kill PID      │   │  Duration: 15s   │
+└─────────────────┘     │    12345         │   │                  │
+                        └──────┬───────────┘   │  After 15s:      │
+                               │               │  • Save JSON     │
+                               │               │  • Kill PID      │
+                               │               │    12345         │
+                               │               └──────┬───────────┘
+                               │                      │
+                               ▼                      ▼
+                   ┌────────────────────────────────────────┐
+                   │         OUTPUT FILES                   │
+                   │                                        │
+                   │  test_results_x11.json                │
+                   │  test_results_wayland.json            │
+                   │                                        │
+                   │  Contains:                             │
+                   │  • Timestamp for each sample           │
+                   │  • RGB statistics (mean/std/min/max)   │
+                   │  • Red overlay detection (bool)        │
+                   │  • Coverage percentage                 │
+                   │  • Movement in pixels                  │
+                   │  • Animation detection (bool)          │
+                   │  • Summary statistics                  │
+                   └────────────────┬───────────────────────┘
+                                    │
+                                    ▼
+                   ┌─────────────────────────────────────────┐
+                   │        TEST ANALYZER                    │
+                   │     (test_analyzer.py)                  │
+                   │                                         │
+                   │  1. Load JSON results                   │
+                   │  2. Display detailed metrics            │
+                   │  3. Compare X11 vs Wayland              │
+                   │  4. Generate feedback                   │
+                   │                                         │
+                   │  Feedback Examples:                     │
+                   │  ✓ X11: Good overlay detection rate    │
+                   │  ✓ X11: Animation working correctly     │
+                   │  ❌ Wayland: Low detection rate         │
+                   │  ⚠️  Large X11/Wayland discrepancy      │
+                   └─────────────────────────────────────────┘
+
+
+NUMERICAL METRICS FLOW
+======================
+
+Visual Output               Capture                 Analysis                  Metrics
+─────────────              ────────                ─────────                 ────────
+
+Screen with         →    RGB Array         →    Red Detection      →     red_overlay_detected: true
+red overlay              [1080,1920,3]           R>200 &&                 red_pixel_count: 199680
+                                                 R>G+50 &&                red_coverage_percent: 10.42
+                                                 R>B+50
+                                                                    →     red_center_x: 960.5
+                                                                          red_center_y: 540.0
+
+Compare to          →    Previous          →    Position Diff     →     red_movement_pixels: 25.3
+previous frame           center position         |cur_x - prev_x|        is_moving: true
+
+Aggregate           →    All samples       →    Statistics        →     avg_movement: 24.8
+over 15s                 (30 samples)            mean/max/count          red_detected_percent: 93.3
+                                                                          is_animated: true
+
+
+TIMING DIAGRAM
+==============
+
+Time    Orchestrator              Main Program         X11 Agent          Wayland Agent
+────    ────────────              ────────────         ─────────          ─────────────
+
+0.0s    Start                     
+        Detect display servers    
+        Check tools               
+
+0.5s    Launch main.py ──────────→ Start
+                                   Initialize
+                                   Create overlay
+
+2.5s    Spawn agents ─────────────────────────────────→ Start          → Start
+        Send PID=12345                                   Get PID=12345    Get PID=12345
+
+3.0s                              Rendering...          Capture #1         Capture #1
+                                  (moving rect)         Analyze            Analyze
+                                                        Store data         Store data
+
+3.5s                              Rendering...          Capture #2         Capture #2
+                                                        ...                ...
+
+17.5s                             Rendering...          Capture #30        Capture #30
+                                                        15s elapsed        15s elapsed
+                                                        Save JSON          Save JSON
+                                                        Kill PID 12345 ──→ X
+                                                                           Kill PID 12345
+
+18.0s   Agents completed          (terminated)          Exit               Exit
+        Check results
+        Run analyzer
+
+18.5s   Analyzer running
+        Load JSON files
+        Calculate stats
+        Print report
+
+19.0s   Complete
+        Exit
+
+
+FEEDBACK LOOP FOR CODING AGENTS
+================================
+
+┌────────────┐
+│   Change   │  Coding agent modifies overlay code
+│    Code    │  (e.g., fix transparency, movement, etc.)
+└─────┬──────┘
+      │
+      ▼
+┌────────────┐
+│    Run     │  ./run_tests.sh
+│   Tests    │  Automated 15-second test
+└─────┬──────┘
+      │
+      ▼
+┌────────────┐
+│  Capture   │  Test agents screenshot every 0.5s
+│   Visual   │  30 samples collected
+└─────┬──────┘
+      │
+      ▼
+┌────────────┐
+│  Convert   │  Each screenshot → numerical metrics
+│    to      │  RGB stats, coverage %, movement, etc.
+│  Numbers   │
+└─────┬──────┘
+      │
+      ▼
+┌────────────┐
+│  Analyze   │  Compare against expected behavior
+│            │  Detection rate, animation, coverage
+└─────┬──────┘
+      │
+      ▼
+┌────────────┐
+│ Generate   │  ✓ Pass: overlay working
+│ Feedback   │  ❌ Fail: specific issue identified
+└─────┬──────┘
+      │
+      ├───────→ Pass? ─────→ Done ✓
+      │
+      └───────→ Fail? ─────→ Return to "Change Code"
+                             (with specific feedback)
+
+
+KEY: Loop is closed because:
+1. Visual output is automatically captured
+2. Converted to measurable numerical data
+3. Compared against success criteria
+4. Specific, actionable feedback generated
+5. No human observation required
