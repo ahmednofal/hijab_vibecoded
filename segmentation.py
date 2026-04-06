@@ -56,7 +56,10 @@ def simulation_worker(
             pass  # Queue full — drop frame, overlay keeps last mask
 
         x = (x + speed) % screen_width
-        time.sleep(frame_delay)
+        try:
+            time.sleep(frame_delay)
+        except (KeyboardInterrupt, SystemExit):
+            break
 
     print("[Segmentation] Simulation worker stopped")
 

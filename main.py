@@ -250,10 +250,13 @@ class HijabOverlay:
         print(f"[Main] Session type: {session_type}")
         
         if session_type == 'wayland':
-            print("[Main] WARNING: Running on Wayland. This application requires X11.")
-            print("[Main] Please switch to X11 session or this may not work correctly.")
+            xwayland = os.environ.get('DISPLAY', '')
+            if xwayland:
+                print(f"[Main] Wayland + XWayland ({xwayland}) — overlay will run via XWayland")
+            else:
+                print("[Main] WARNING: Wayland detected but DISPLAY not set — XWayland unavailable")
         elif session_type == 'x11':
-            print("[Main] X11 detected - good!")
+            print("[Main] X11 detected")
         else:
             print(f"[Main] WARNING: Unknown session type: {session_type}")
         
