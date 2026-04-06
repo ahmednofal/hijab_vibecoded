@@ -13,13 +13,11 @@ from multiprocessing import Process, Queue, Event
 from PyQt6.QtWidgets import QApplication
 
 from capture import capture_worker, is_wayland
-# Import overlay types
 from overlay import run_overlay as run_overlay_qt
 from overlay_gtk3 import run_overlay as run_overlay_gtk3
 from overlay_x11 import run_overlay_x11
 from overlay_wayland import run_overlay_wayland
-# Temporarily commented out to bypass segmentation issues
-# from segmentation import segmentation_worker
+from segmentation import simulation_worker, segmentation_worker
 
 
 class HijabOverlay:
@@ -107,26 +105,54 @@ class HijabOverlay:
         if monitor_geometry:
             print(f"[Main] Monitor geometry: x={monitor_geometry[0]}, y={monitor_geometry[1]}, {monitor_geometry[2]}x{monitor_geometry[3]}")
         print()
-        
-        # Capture initial background for Wayland (will be refreshed periodically)
-        # No need to capture background - we want true transparency
-        background_image = None
-        
-        # TESTING MODE: Moving rectangle
-        print("[Main] OVERLAY TEST:")
-        print("[Main] - Transparent overlay (actual desktop shows through)")
-        print("[Main] - Red rectangle moves left to right")
-        print("[Main] - Clicks and keyboard input pass through")
-        print("[Main] - Not visible in Alt-Tab")
-        
-        # Start capture worker (for future segmentation pipeline)
+
+        screen_width  = monitor_geometry[2] if monitor_geometry else 1920
+        screen_height = monitor_geometry[3] if monitor_geometry else 1080
+
+        # -----------------------------------------------------------------------
+        # Component 1 – Simulated segmentation
+        #   Generates moving-rectangle masks (numpy H×W uint8) into mask_queue.
+        #   Replace simulation_worker with segmentation_worker once a real CV
+        #   model is ready; no other code needs to change.
+        # -----------------------------------------------------------------------
+        print("[Main] Starting simulation segmentation worker...")
+        self.segmentation_process = Process(
+            target=simulation_worker,
+            args=(self.mask_queue, self.stop_event, screen_width, screen_height),
+            daemon=True,
+        )
+        self.segmentation_process.start()
+
+        # -----------------------------------------------------------------------
+        # Component 2 – Live screen capture
+        #   Frames go into capture_queue for the (future) real segmentation model.
+        #   On X11 the overlay window ID is used to black-out the overlay region
+        #   before the frame reaches the model, preventing a feedback loop.
+        #   On Wayland the overlay is excluded by design in simulation mode
+        #   (masks are generated independently, not from captured frames).
+        # -----------------------------------------------------------------------
         print("[Main] Starting capture worker...")
         self.capture_process = Process(
             target=capture_worker,
-            args=(self.capture_queue, self.stop_event, monitor_index, self.overlay_id_queue, monitor_geometry, self.hide_signal_queue),
-            daemon=True
+            args=(self.capture_queue, self.stop_event, monitor_index,
+                  self.overlay_id_queue, monitor_geometry, self.hide_signal_queue),
+            daemon=True,
         )
         self.capture_process.start()
+
+        # -----------------------------------------------------------------------
+        # Component 3 – Transparent overlay
+        #   Renders whatever mask arrives on mask_queue as a red semi-transparent
+        #   region.  The overlay itself never appears in the capture feed on X11
+        #   (blacked out by window ID).  On Wayland with simulation mode there is
+        #   no feedback loop because masks come from the simulation worker, not
+        #   from analysing the captured frame.
+        # -----------------------------------------------------------------------
+        print("[Main] SIMULATION MODE:")
+        print("[Main]   - Transparent overlay (desktop shows through)")
+        print("[Main]   - Red rectangle driven by simulation segmentation worker")
+        print("[Main]   - Mouse/keyboard input passes through the overlay")
+        print("[Main]   - Overlay not visible in Alt-Tab")
         
         # Setup signal handler for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -139,7 +165,20 @@ class HijabOverlay:
         backend = os.environ.get('OVERLAY_BACKEND', 'auto').lower()
         
         if backend == 'auto':
-            backend = 'wayland' if is_wayland() else 'x11'
+            if is_wayland() and os.environ.get('DISPLAY'):
+                # XWayland is running — use X11 overlay via XWayland.
+                # GTK3 native-Wayland windows cannot reliably bypass the WM
+                # (no gtk-layer-shell on GNOME), appear in Alt-Tab, and lose
+                # stacking when other windows gain focus.
+                # X11BypassWindowManagerHint + _NET_WM_STATE_SKIP_PAGER on
+                # XWayland solves all three problems; GNOME/Mutter composites
+                # XWayland windows correctly above native Wayland surfaces.
+                backend = 'x11'
+                print(f"[Main] Wayland + XWayland detected — using X11 overlay via XWayland")
+            elif is_wayland():
+                backend = 'wayland'
+            else:
+                backend = 'x11'
         
         print(f"[Main] Selected overlay backend: {backend}")
         
@@ -153,7 +192,7 @@ class HijabOverlay:
                 run_overlay_wayland(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue)
             elif backend == 'gtk':
                 print("[Main] Using GTK3 overlay")
-                run_overlay_gtk3(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue, background_image)
+                run_overlay_gtk3(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue, None)
             elif backend == 'qt':
                 print("[Main] Using PyQt6 overlay")
                 run_overlay_qt(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue)

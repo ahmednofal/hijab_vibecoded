@@ -11,6 +11,7 @@ import numpy as np
 from multiprocessing import Queue
 import sys
 import os
+
 import cairo
 import gi
 
@@ -39,11 +40,8 @@ class WaylandTransparentOverlay(Gtk.Window):
         self.screen_index = screen_index
         self.hide_signal_queue = hide_signal_queue
         self.current_mask = None
-        self.current_frame = None
-        self.rect_x_offset = 0
-        self.rect_width = 400  # Larger rectangle for visibility
         self._hidden_for_capture = False
-        self._draw_count = 0  # Debug counter
+        self._draw_count = 0
         
         self.init_ui()
         
@@ -76,8 +74,11 @@ class WaylandTransparentOverlay(Gtk.Window):
         self.set_skip_taskbar_hint(True)
         self.set_skip_pager_hint(True)
         
-        # Use NOTIFICATION type hint - this often supports transparency better
-        self.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
+        # DOCK type hint: GNOME unconditionally excludes DOCK windows from
+        # the Alt-Tab switcher, the overview (Super key), and the taskbar.
+        # NOTIFICATION is unreliable — GNOME may still show it in Alt-Tab.
+        # DOCK is what GNOME Shell's own top bar and panels (waybar, polybar) use.
+        self.set_type_hint(Gdk.WindowTypeHint.DOCK)
         
         # Enable transparency BEFORE realizing/showing
         screen = self.get_screen()
@@ -115,7 +116,7 @@ class WaylandTransparentOverlay(Gtk.Window):
         # Get window ID
         self.overlay_window_id = id(self)
         print(f"[WaylandOverlay] Window ID: {self.overlay_window_id}")
-        print("[WaylandOverlay] Using NOTIFICATION window type for better transparency")
+        print("[WaylandOverlay] Using DOCK window type (excluded from Alt-Tab/overview)")
     
     def on_realize(self, widget):
         """Called when window is realized - set input passthrough."""
@@ -135,7 +136,7 @@ class WaylandTransparentOverlay(Gtk.Window):
             print(f"[WaylandOverlay] Could not set input passthrough: {e}")
     
     def update_mask(self):
-        """Update overlay state from queues."""
+        """Pull the latest mask from the queue and schedule a redraw."""
         try:
             # Handle hide/show signals
             if self.hide_signal_queue is not None:
@@ -149,80 +150,62 @@ class WaylandTransparentOverlay(Gtk.Window):
                         self._hidden_for_capture = False
                         self.show_all()
                         print("[WaylandOverlay] Showing after capture")
-            
-            # Get latest mask
+
+            # Drain mask queue — keep only the most recent mask
             while not self.mask_queue.empty():
                 self.current_mask = self.mask_queue.get_nowait()
-            
-            # Get captured frame
-            if self.capture_queue is not None:
-                got_frame = False
-                while not self.capture_queue.empty():
-                    self.current_frame = self.capture_queue.get_nowait()
-                    got_frame = True
-                
-                if got_frame and not hasattr(self, '_first_frame_received'):
-                    self._first_frame_received = True
-                    print(f"[WaylandOverlay] First frame received! Shape: {self.current_frame.shape}")
-            
-            # Animate rectangle
-            if not self._hidden_for_capture:
-                old_x = self.rect_x_offset
-                self.rect_x_offset += 10  # Faster movement for visibility
-                if self.rect_x_offset > self.screen_width:
-                    self.rect_x_offset = 0
-                    print(f"[WaylandOverlay] Rectangle reset to left (was at {old_x})")
-                
-                # Debug movement occasionally
-                if not hasattr(self, '_update_count'):
-                    self._update_count = 0
-                self._update_count += 1
-                if self._update_count % 30 == 1:
-                    print(f"[WaylandOverlay] Update #{self._update_count}: Moving rect from {old_x} to {self.rect_x_offset}")
-            
-            # Trigger redraw
+
             self.queue_draw()
-            
+
         except Exception as e:
             print(f"[WaylandOverlay] Update error: {e}")
             import traceback
             traceback.print_exc()
-        
-        return True  # Continue timer
+
+        return True  # Keep GLib timer alive
     
     def on_draw(self, widget, cr):
-        """Paint the overlay content using Cairo."""
+        """Paint the segmentation mask as a red semi-transparent overlay using Cairo."""
         try:
             self._draw_count += 1
-            if self._draw_count % 10 == 1:  # Debug more frequently
-                print(f"[WaylandOverlay] Draw #{self._draw_count}: rect at x={self.rect_x_offset}, "
-                      f"width={self.rect_width}, screen={self.screen_width}x{self.screen_height}")
-            
-            # CRITICAL: Clear entire surface with fully transparent color
-            # This ensures desktop shows through
-            cr.save()
-            cr.set_source_rgba(0, 0, 0, 0)  # Fully transparent
-            cr.set_operator(cairo.OPERATOR_SOURCE)  # Replace everything
+
+            # Step 1: clear the entire surface to fully transparent
+            cr.set_source_rgba(0, 0, 0, 0)
+            cr.set_operator(cairo.OPERATOR_SOURCE)
             cr.paint()
-            cr.restore()
-            
-            # Now draw red rectangle with normal composition
-            huge_width = int(self.screen_width * 0.5)
-            
-            cr.set_source_rgba(1.0, 0.0, 0.0, 0.7)  # Semi-transparent red
-            cr.set_operator(cairo.OPERATOR_OVER)  # Normal blending
-            cr.rectangle(self.rect_x_offset, 0, huge_width, self.screen_height)
-            cr.fill()
-            
+
+            # Step 2: paint mask in red using OPERATOR_OVER
+            if self.current_mask is not None:
+                mask = self.current_mask
+                h, w = mask.shape
+
+                # Cairo FORMAT_ARGB32 is premultiplied ARGB stored in memory as
+                # [B, G, R, A] on little-endian.  For red at ~70% opacity:
+                #   alpha = 178, R_pre = 255*178//255 = 178, G=B=0
+                alpha = 178
+                img = np.zeros((h, w, 4), dtype=np.uint8)
+                img[mask == 1, 2] = alpha   # R (premultiplied)
+                img[mask == 1, 3] = alpha   # A
+
+                stride = cairo.ImageSurface.format_stride_for_width(
+                    cairo.FORMAT_ARGB32, w
+                )
+                surface = cairo.ImageSurface.create_for_data(
+                    bytearray(img.tobytes()),
+                    cairo.FORMAT_ARGB32, w, h, stride
+                )
+                cr.set_operator(cairo.OPERATOR_OVER)
+                cr.set_source_surface(surface, 0, 0)
+                cr.paint()
+
             if self._draw_count == 1:
-                print(f"[WaylandOverlay] First draw: rect from {self.rect_x_offset} to {self.rect_x_offset + huge_width}, height {self.screen_height}")
-                print(f"[WaylandOverlay] Drawing with transparent background - desktop should show through")
-            
+                print("[WaylandOverlay] First draw complete — desktop shows through transparent regions")
+
         except Exception as e:
             print(f"[WaylandOverlay] Draw error: {e}")
             import traceback
             traceback.print_exc()
-        
+
         return False
     
     def on_destroy(self, widget):

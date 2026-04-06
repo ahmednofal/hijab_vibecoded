@@ -29,8 +29,6 @@ class X11TransparentOverlay(QWidget):
         self.current_mask = None
         self.current_frame = None
         self.screen_geometry = None
-        self.rect_x_offset = 0
-        self.rect_width = 200
         self._hidden_for_capture = False
         
         self.init_ui()
@@ -44,10 +42,9 @@ class X11TransparentOverlay(QWidget):
     
     def init_ui(self):
         """Initialize the X11 overlay window."""
-        # Verify we're on X11
         session_type = os.environ.get('XDG_SESSION_TYPE', 'unknown')
-        if session_type != 'x11':
-            print(f"[X11Overlay] WARNING: Not running on X11 (detected: {session_type})")
+        if session_type not in ('x11', 'wayland'):
+            print(f"[X11Overlay] WARNING: Unknown session type: {session_type}")
         
         # Get screen geometry
         screens = QApplication.screens()
@@ -113,7 +110,7 @@ class X11TransparentOverlay(QWidget):
         print(f"[X11Overlay] Window ID: {self.overlay_window_id}")
     
     def update_mask(self):
-        """Update overlay state from queues."""
+        """Pull the latest mask from the queue and schedule a repaint."""
         try:
             # Handle hide/show signals
             if self.hide_signal_queue is not None:
@@ -125,58 +122,49 @@ class X11TransparentOverlay(QWidget):
                     elif signal == 'show':
                         self._hidden_for_capture = False
                         self.showFullScreen()
-            
-            # Get latest mask
+
+            # Drain mask queue — keep only the most recent mask
             while not self.mask_queue.empty():
                 self.current_mask = self.mask_queue.get_nowait()
-            
-            # Get captured frame
-            if self.capture_queue is not None:
-                got_frame = False
-                while not self.capture_queue.empty():
-                    self.current_frame = self.capture_queue.get_nowait()
-                    got_frame = True
-                
-                if got_frame and not hasattr(self, '_first_frame_received'):
-                    self._first_frame_received = True
-                    print(f"[X11Overlay] First frame received! Shape: {self.current_frame.shape}")
-            
-            # Animate rectangle
-            if not self._hidden_for_capture:
-                self.rect_x_offset += 5
-                if self.rect_x_offset > self.screen_geometry.width():
-                    self.rect_x_offset = 0
-            
+
             self.update()
         except Exception as e:
             print(f"[X11Overlay] Update error: {e}")
     
     def paintEvent(self, event):
-        """Paint the overlay content."""
+        """Paint the segmentation mask as a red semi-transparent overlay."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        
+
         try:
-            screen_width = self.screen_geometry.width()
-            screen_height = self.screen_geometry.height()
-            
-            # Clear with transparency
+            sw = self.screen_geometry.width()
+            sh = self.screen_geometry.height()
+
+            # Step 1: clear to fully transparent
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-            painter.fillRect(0, 0, screen_width, screen_height, Qt.GlobalColor.transparent)
-            
-            # Draw content
+            painter.fillRect(0, 0, sw, sh, Qt.GlobalColor.transparent)
+
+            # Step 2: draw mask in red
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-            
-            # Draw moving red rectangle
-            painter.fillRect(
-                self.rect_x_offset, 0,
-                self.rect_width, screen_height,
-                QColor(255, 0, 0, 180)
-            )
-            
+
+            if self.current_mask is not None:
+                import numpy as np
+                from PyQt6.QtGui import QImage
+
+                mask = self.current_mask
+                h, w = mask.shape
+
+                # Build RGBA image: red (255,0,0,180) where mask==1, transparent elsewhere
+                rgba = np.zeros((h, w, 4), dtype=np.uint8)
+                rgba[mask == 1] = (255, 0, 0, 180)
+
+                qimg = QImage(rgba.tobytes(), w, h, w * 4,
+                              QImage.Format.Format_RGBA8888)
+                painter.drawImage(0, 0, qimg)
+
         except Exception as e:
             print(f"[X11Overlay] Paint error: {e}")
-        
+
         painter.end()
     
     def closeEvent(self, event):
@@ -198,13 +186,20 @@ def run_overlay_x11(mask_queue: Queue, capture_queue: Queue = None,
         screen_index: Which monitor to display on
         hide_signal_queue: Queue to receive hide/show signals
     """
-    # Verify X11
     session_type = os.environ.get('XDG_SESSION_TYPE', 'unknown')
-    if session_type != 'x11':
-        print(f"[X11Overlay] ERROR: This overlay requires X11 (detected: {session_type})")
-        print("[X11Overlay] Please switch to X11 session or use a different overlay implementation")
-        return
-    
+    if session_type == 'wayland':
+        # On Wayland we run through XWayland (DISPLAY=:0).
+        # Force Qt to use the XCB (X11) platform plugin so we get:
+        #   - X11BypassWindowManagerHint  (completely bypasses WM)
+        #   - _NET_WM_STATE_SKIP_PAGER    (hidden from Alt-Tab)
+        #   - WindowTransparentForInput   (real input passthrough)
+        # GNOME/Mutter composites XWayland windows correctly above Wayland surfaces.
+        if not os.environ.get('DISPLAY'):
+            print("[X11Overlay] ERROR: Wayland session but DISPLAY not set — XWayland not available")
+            return
+        os.environ['QT_QPA_PLATFORM'] = 'xcb'
+        print(f"[X11Overlay] Wayland session — running via XWayland (DISPLAY={os.environ['DISPLAY']})")
+
     app = QApplication(sys.argv)
     print("[X11Overlay] Starting X11 overlay application")
     
