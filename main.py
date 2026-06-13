@@ -24,8 +24,6 @@ class HijabOverlay:
         # Queues for inter-process communication
         self.capture_queue = Queue(maxsize=2)
         self.mask_queue = Queue(maxsize=2)
-        self.overlay_id_queue = Queue(maxsize=1)  # For sending overlay window ID
-        self.hide_signal_queue = Queue(maxsize=2)  # For capture worker to signal hide/show
         
         # Event to signal stop
         self.stop_event = Event()
@@ -77,7 +75,7 @@ class HijabOverlay:
         print("[Main] Starting capture worker...")
         self.capture_process = Process(
             target=capture_worker_windows,
-            args=(self.capture_queue, self.stop_event, monitor_index, self.overlay_id_queue, monitor_geometry, self.hide_signal_queue),
+            args=(self.capture_queue, self.stop_event, monitor_index),
             daemon=True
         )
         self.capture_process.start()
@@ -102,7 +100,7 @@ class HijabOverlay:
         # Start overlay window
         try:
             print("[Main] Using Windows PyQt6 overlay")
-            run_overlay_windows(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue)
+            run_overlay_windows(self.mask_queue, monitor_index=monitor_index)
         except KeyboardInterrupt:
             print("\n[Main] Keyboard interrupt received")
         except Exception as e:

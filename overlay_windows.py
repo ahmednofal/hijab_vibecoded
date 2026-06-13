@@ -12,16 +12,12 @@ import ctypes
 class TransparentOverlayWindows(QWidget):
     """Fullscreen transparent overlay that renders person masks in red (Windows version)."""
     
-    def __init__(self, mask_queue: Queue, capture_queue: Queue = None, screen_index: int = 0, hide_signal_queue: Queue = None):
+    def __init__(self, mask_queue: Queue, screen_index: int = 0):
         super().__init__()
         self.mask_queue = mask_queue
-        self.capture_queue = capture_queue
         self.screen_index = screen_index
-        self.hide_signal_queue = hide_signal_queue
         self.current_mask = None
-        self.current_frame = None
         self.screen_geometry = None
-        self._hidden_for_capture = False
         
         self.init_ui()
         
@@ -89,38 +85,12 @@ class TransparentOverlayWindows(QWidget):
         
         print(f"[Overlay] Screen geometry: {self.screen_geometry.width()}x{self.screen_geometry.height()}")
     
-    def get_hwnd(self):
-        """Get the Windows window handle (HWND)."""
-        return self.overlay_hwnd
-    
     def update_mask(self):
         """Try to get the latest mask from the queue."""
         try:
-            # Check if capture worker wants us to hide
-            if self.hide_signal_queue is not None:
-                while not self.hide_signal_queue.empty():
-                    signal = self.hide_signal_queue.get_nowait()
-                    if signal == 'hide':
-                        self._hidden_for_capture = True
-                        self.hide()
-                    elif signal == 'show':
-                        self._hidden_for_capture = False
-                        self.showFullScreen()
-            
             # Get latest mask (non-blocking)
             while not self.mask_queue.empty():
                 self.current_mask = self.mask_queue.get_nowait()
-            
-            # Get captured frame if available
-            if self.capture_queue is not None:
-                got_frame = False
-                while not self.capture_queue.empty():
-                    self.current_frame = self.capture_queue.get_nowait()
-                    got_frame = True
-                
-                # Optional: verify we're not in the capture
-                if got_frame and self.current_frame is not None:
-                    pass  # Frame received for verification
             
             # Update display
             self.update()
@@ -171,17 +141,13 @@ class TransparentOverlayWindows(QWidget):
         painter.end()
 
 
-def run_overlay_windows(mask_queue: Queue, capture_queue: Queue = None, hwnd_queue: Queue = None, 
-                       screen_index: int = 0, hide_signal_queue: Queue = None):
+def run_overlay_windows(mask_queue: Queue, screen_index: int = 0):
     """
     Run the Windows transparent overlay window.
     
     Args:
         mask_queue: Queue containing person segmentation masks
-        capture_queue: Queue containing captured frames (for verification)
-        hwnd_queue: Queue to send window HWND back to main process
         screen_index: Which monitor to use (0 = primary)
-        hide_signal_queue: Queue to receive hide/show signals from capture worker
     """
     print("[Overlay] Starting Windows overlay...")
     
@@ -191,17 +157,7 @@ def run_overlay_windows(mask_queue: Queue, capture_queue: Queue = None, hwnd_que
         app = QApplication(sys.argv)
     
     # Create and show overlay window
-    overlay = TransparentOverlayWindows(mask_queue, capture_queue, screen_index, hide_signal_queue)
-    
-    # Send window HWND back to main process (for capture exclusion)
-    if hwnd_queue is not None:
-        try:
-            hwnd = overlay.get_hwnd()
-            if hwnd:
-                hwnd_queue.put(hwnd)
-                print(f"[Overlay] Sent HWND {hwnd} to main process")
-        except Exception as e:
-            print(f"[Overlay] Error sending HWND: {e}")
+    overlay = TransparentOverlayWindows(mask_queue, screen_index)
     
     overlay.showFullScreen()
     

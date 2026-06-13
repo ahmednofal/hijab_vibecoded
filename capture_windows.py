@@ -50,55 +50,7 @@ def capture_windows(monitor_index: int = 0):
         return None
 
 
-def capture_windows_exclude_window(monitor_index: int = 0, exclude_hwnd: int = None):
-    """Capture screen using MSS, optionally masking out a specific window.
-    
-    Args:
-        monitor_index: Which monitor to capture (0 = all, 1+ = specific)
-        exclude_hwnd: Windows handle (HWND) of window to exclude (black out)
-    
-    Returns:
-        numpy.ndarray: RGB frame of the captured screen
-    """
-    frame = capture_windows(monitor_index)
-    
-    if frame is None:
-        return None
-    
-    # If we need to exclude a window, black it out
-    if exclude_hwnd is not None:
-        try:
-            import win32gui
-            
-            # Get window rectangle
-            rect = win32gui.GetWindowRect(exclude_hwnd)
-            x1, y1, x2, y2 = rect
-            
-            # Get monitor info to calculate relative coordinates
-            with mss.mss() as sct:
-                mon_idx = monitor_index + 1 if monitor_index >= 0 else 1
-                if mon_idx > len(sct.monitors) - 1:
-                    mon_idx = 1
-                monitor = sct.monitors[mon_idx]
-                
-                # Calculate relative coordinates
-                rel_x1 = max(0, x1 - monitor['left'])
-                rel_y1 = max(0, y1 - monitor['top'])
-                rel_x2 = min(monitor['width'], x2 - monitor['left'])
-                rel_y2 = min(monitor['height'], y2 - monitor['top'])
-                
-                # Black out the window area
-                if rel_x2 > rel_x1 and rel_y2 > rel_y1:
-                    frame[rel_y1:rel_y2, rel_x1:rel_x2] = 0
-        except Exception as e:
-            print(f"[Capture] Error excluding window: {e}")
-    
-    return frame
-
-
-def capture_worker_windows(output_queue: Queue, stop_event: Event, monitor_index: int = 0, 
-                          overlay_hwnd_queue: Queue = None, monitor_geometry: tuple = None, 
-                          hide_signal_queue: Queue = None):
+def capture_worker_windows(output_queue: Queue, stop_event: Event, monitor_index: int = 0):
     """
     Windows-specific capture worker that continuously captures the screen.
     
@@ -106,21 +58,8 @@ def capture_worker_windows(output_queue: Queue, stop_event: Event, monitor_index
         output_queue: Queue to put captured frames into
         stop_event: Event to signal when to stop capturing
         monitor_index: Which monitor to capture (0 = primary)
-        overlay_hwnd_queue: Queue to receive overlay window HWND from (for exclusion)
-        monitor_geometry: Tuple (x, y, width, height) for the target monitor (unused on Windows)
-        hide_signal_queue: Queue to signal overlay to hide/show during capture (optional)
     """
     print(f"[Capture] Starting Windows capture worker for monitor {monitor_index}")
-    
-    # Wait for overlay window HWND
-    overlay_hwnd = None
-    if overlay_hwnd_queue is not None:
-        print("[Capture] Waiting for overlay window HWND...")
-        try:
-            overlay_hwnd = overlay_hwnd_queue.get(timeout=5)
-            print(f"[Capture] Got overlay window HWND: {overlay_hwnd}")
-        except:
-            print("[Capture] WARNING: Didn't get overlay window HWND")
     
     # Test capture method
     print("[Capture] Testing Windows capture method (MSS)...")
