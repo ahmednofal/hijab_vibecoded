@@ -30,11 +30,11 @@ if errorlevel 1 (
 echo Virtual environment activated.
 echo.
 
-REM Run the application
-echo Starting Hijab by Copilot...
+REM Run the application in test mode (red rectangle, no segmentation)
+echo Starting Hijab by Copilot (TEST MODE)...
 echo Press Ctrl+C to exit.
 echo.
-python main.py
+python main.py --test
 
 REM Deactivate when done
 deactivate

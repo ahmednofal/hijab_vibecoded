@@ -10,6 +10,7 @@ Windows-only version.
 
 import sys
 import signal
+import argparse
 from multiprocessing import Process, Queue, Event
 
 from capture_windows import capture_worker_windows, list_windows_monitors
@@ -20,17 +21,18 @@ from segmentation import segmentation_worker
 class HijabOverlay:
     """Main application orchestrator."""
     
-    def __init__(self):
+    def __init__(self, test_mode=False):
         # Queues for inter-process communication
         self.capture_queue = Queue(maxsize=2)
         self.mask_queue = Queue(maxsize=2)
-        
+
         # Event to signal stop
         self.stop_event = Event()
-        
+
         # Processes
         self.capture_process = None
         self.segmentation_process = None
+        self.test_mode = test_mode
     
     def select_monitor(self):
         """Detect monitors using MSS and select the primary one."""
@@ -67,9 +69,9 @@ class HijabOverlay:
             print(f"[Main] Monitor geometry: x={monitor_geometry[0]}, y={monitor_geometry[1]}, {monitor_geometry[2]}x{monitor_geometry[3]}")
         print()
         
-        # TESTING MODE: Moving rectangle to test feedback loop
-        print("[Main] SEGMENTATION MODE:")
-        print("[Main] - Capturing screen → segmenting → overlaying")
+        mode_name = "TEST MODE" if self.test_mode else "SEGMENTATION MODE"
+        print(f"[Main] {mode_name}:")
+        print(f"[Main] - {'Animated red rectangle (no segmentation)' if self.test_mode else 'Capturing screen → segmenting → overlaying'}")
 
         # Start capture worker
         print("[Main] Starting capture worker...")
@@ -80,15 +82,16 @@ class HijabOverlay:
         )
         self.capture_process.start()
 
-        # Start segmentation worker
-        print("[Main] Starting segmentation worker...")
-        self.segmentation_process = Process(
-            target=segmentation_worker,
-            args=(self.capture_queue, self.mask_queue, self.stop_event),
-            kwargs={'scale_factor': 0.5},
-            daemon=True
-        )
-        self.segmentation_process.start()
+        # Start segmentation worker (only in non-test mode)
+        if not self.test_mode:
+            print("[Main] Starting segmentation worker...")
+            self.segmentation_process = Process(
+                target=segmentation_worker,
+                args=(self.capture_queue, self.mask_queue, self.stop_event),
+                kwargs={'scale_factor': 0.5},
+                daemon=True
+            )
+            self.segmentation_process.start()
         
         # Setup signal handler for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -100,7 +103,7 @@ class HijabOverlay:
         # Start overlay window
         try:
             print("[Main] Using Windows PyQt6 overlay")
-            run_overlay_windows(self.mask_queue, monitor_index=monitor_index)
+            run_overlay_windows(self.mask_queue, monitor_index=monitor_index, test_mode=self.test_mode)
         except KeyboardInterrupt:
             print("\n[Main] Keyboard interrupt received")
         except Exception as e:
@@ -147,7 +150,10 @@ class HijabOverlay:
 
 def main():
     """Application entry point."""
-    app = HijabOverlay()
+    parser = argparse.ArgumentParser(description='Hijab by Copilot')
+    parser.add_argument('--test', action='store_true', help='Show animated test rectangle instead of running segmentation')
+    args = parser.parse_args()
+    app = HijabOverlay(test_mode=args.test)
     app.start()
 
 

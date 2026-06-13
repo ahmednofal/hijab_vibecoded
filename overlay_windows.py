@@ -3,7 +3,7 @@
 import numpy as np
 from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPainter, QImage
+from PyQt6.QtGui import QPainter, QColor, QImage
 from multiprocessing import Queue
 import sys
 import ctypes
@@ -12,12 +12,15 @@ import ctypes
 class TransparentOverlayWindows(QWidget):
     """Fullscreen transparent overlay that renders person masks in red (Windows version)."""
     
-    def __init__(self, mask_queue: Queue, screen_index: int = 0):
+    def __init__(self, mask_queue: Queue, screen_index: int = 0, test_mode: bool = False):
         super().__init__()
         self.mask_queue = mask_queue
         self.screen_index = screen_index
         self.current_mask = None
         self.screen_geometry = None
+        self.test_mode = test_mode
+        self.rect_x_offset = 0
+        self.rect_width = 200
         
         self.init_ui()
         
@@ -92,6 +95,10 @@ class TransparentOverlayWindows(QWidget):
             while not self.mask_queue.empty():
                 self.current_mask = self.mask_queue.get_nowait()
             
+            # Animate test rectangle
+            if self.test_mode:
+                self.rect_x_offset = (self.rect_x_offset + 5) % (self.screen_geometry.width() + self.rect_width)
+            
             # Update display
             self.update()
             
@@ -109,7 +116,16 @@ class TransparentOverlayWindows(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        if self.current_mask is not None:
+        if self.test_mode:
+            # Test mode: animated red rectangle
+            rect_x = self.rect_x_offset - self.rect_width
+            rect_y = self.screen_geometry.height() // 2 - 100
+            rect_h = 200
+            painter.fillRect(
+                rect_x, rect_y, self.rect_width, rect_h,
+                QColor(255, 0, 0, 128)
+            )
+        elif self.current_mask is not None:
             try:
                 mask = self.current_mask
                 
@@ -141,13 +157,14 @@ class TransparentOverlayWindows(QWidget):
         painter.end()
 
 
-def run_overlay_windows(mask_queue: Queue, screen_index: int = 0):
+def run_overlay_windows(mask_queue: Queue, screen_index: int = 0, test_mode: bool = False):
     """
     Run the Windows transparent overlay window.
     
     Args:
         mask_queue: Queue containing person segmentation masks
         screen_index: Which monitor to use (0 = primary)
+        test_mode: Show animated rectangle instead of segmentation mask
     """
     print("[Overlay] Starting Windows overlay...")
     
@@ -157,7 +174,7 @@ def run_overlay_windows(mask_queue: Queue, screen_index: int = 0):
         app = QApplication(sys.argv)
     
     # Create and show overlay window
-    overlay = TransparentOverlayWindows(mask_queue, screen_index)
+    overlay = TransparentOverlayWindows(mask_queue, screen_index, test_mode)
     
     overlay.showFullScreen()
     
