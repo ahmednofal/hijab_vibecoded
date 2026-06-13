@@ -6,7 +6,7 @@ from multiprocessing import Queue, Event
 import numpy as np
 import cv2
 
-_LOG_FILE = os.path.join(os.environ.get('USERPROFILE', os.getcwd()), 'Desktop', 'segmentation_debug.log')
+_LOG_FILE = os.path.join(os.getcwd(), 'segmentation_debug.log')
 
 def log(msg):
     with open(_LOG_FILE, 'a') as f:
