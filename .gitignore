@@ -24,3 +24,4 @@ Thumbs.db
 *.iso
 capture_debug*
 segmentation_debug*
+selfie_segmenter.tflite
