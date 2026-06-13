@@ -8,10 +8,10 @@ import mss
 import mss.tools
 
 try:
-    import cv2
-    HAS_CV2 = True
+    from PIL import Image
+    HAS_PIL = True
 except ImportError:
-    HAS_CV2 = False
+    HAS_PIL = False
 
 
 def capture_windows(monitor_index: int = 0):
@@ -137,14 +137,16 @@ def capture_worker_windows(output_queue: Queue, stop_event: Event, monitor_index
     max_consecutive_errors = 10
     capture_delay = 0.01  # 10ms delay for ~60fps max
 
-    # Initialize video writer for debug recording
-    video_writer = None
-    if HAS_CV2:
+    # Setup debug frame dump directory
+    save_frames = False
+    frames_dir = os.path.join(os.getcwd(), 'capture_frames')
+    if HAS_PIL:
         try:
-            video_path = os.path.join(os.getcwd(), 'capture_debug.mp4')
-            print(f"[Capture] Recording debug video to: {video_path}")
+            os.makedirs(frames_dir, exist_ok=True)
+            print(f"[Capture] Debug frames will be saved to: {frames_dir}")
+            save_frames = True
         except Exception as e:
-            print(f"[Capture] Could not create video dir: {e}")
+            print(f"[Capture] Could not create frames dir: {e}")
     
     while not stop_event.is_set():
         try:
@@ -158,14 +160,13 @@ def capture_worker_windows(output_queue: Queue, stop_event: Event, monitor_index
             
             frame_count += 1
 
-            # Write to debug video (first 10 seconds worth)
-            if HAS_CV2:
-                if video_writer is None:
-                    h, w = frame.shape[:2]
-                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                    video_writer = cv2.VideoWriter(video_path, fourcc, 30.0, (w, h))
-                    print(f"[Capture] Video writer initialized: {w}x{h} @ 30fps")
-                video_writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            # Save every 100th frame as PNG for debug inspection
+            if save_frames and frame_count % 100 == 0:
+                try:
+                    img = Image.fromarray(frame)
+                    img.save(os.path.join(frames_dir, f'frame_{frame_count:06d}.png'))
+                except Exception as e:
+                    print(f"[Capture] Frame save error: {e}")
 
             # Try to put frame in queue (non-blocking)
             try:
@@ -196,11 +197,6 @@ def capture_worker_windows(output_queue: Queue, stop_event: Event, monitor_index
                 break
             
             time.sleep(0.5)
-    
-    # Cleanup video writer
-    if video_writer is not None:
-        video_writer.release()
-        print(f"[Capture] Debug video saved")
     
     print("[Capture] Capture worker stopped")
 

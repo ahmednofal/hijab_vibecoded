@@ -6,6 +6,11 @@ echo Hijab by Copilot - Windows Setup
 echo ============================================================
 echo.
 
+REM Ensure SMB share is mapped
+net use Z: /delete >nul 2>&1
+net use Z: \\10.0.2.4\qemu >nul 2>&1
+Z:
+
 REM Check Python installation
 echo Checking Python installation...
 python --version >nul 2>&1
