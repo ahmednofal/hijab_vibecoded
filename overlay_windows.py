@@ -94,6 +94,11 @@ class TransparentOverlayWindows(QWidget):
             # Get latest mask (non-blocking)
             while not self.mask_queue.empty():
                 self.current_mask = self.mask_queue.get_nowait()
+                if not hasattr(self, '_mask_count'):
+                    self._mask_count = 0
+                self._mask_count += 1
+                if self._mask_count == 1:
+                    print(f"[Overlay] First mask received! shape={self.current_mask.shape}")
             
             # Animate test rectangle
             if self.test_mode:

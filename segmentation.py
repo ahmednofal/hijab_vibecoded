@@ -53,6 +53,9 @@ def segmentation_worker(
                 # Get original dimensions
                 orig_height, orig_width = frame.shape[:2]
                 
+                if frame_count == 0:
+                    print(f"[Segmentation] First frame received: {orig_width}x{orig_height}")
+                
                 # Downscale for faster processing if needed
                 if scale_factor < 1.0:
                     small_frame = cv2.resize(
@@ -81,6 +84,11 @@ def segmentation_worker(
                 
                 # Convert to binary mask (threshold at 0.5)
                 binary_mask = (mask > 0.5).astype(np.uint8)
+                
+                if frame_count == 0:
+                    person_pixels = int(binary_mask.sum())
+                    total_pixels = binary_mask.size
+                    print(f"[Segmentation] First mask: person={person_pixels}/{total_pixels} pixels ({100.0 * person_pixels / total_pixels:.1f}%)")
                 
                 # Try to put mask in queue (non-blocking)
                 try:
