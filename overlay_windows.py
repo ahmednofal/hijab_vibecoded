@@ -3,7 +3,7 @@
 import numpy as np
 from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPainter, QColor, QImage
+from PyQt6.QtGui import QPainter, QImage
 from multiprocessing import Queue
 import sys
 import ctypes
@@ -21,8 +21,6 @@ class TransparentOverlayWindows(QWidget):
         self.current_mask = None
         self.current_frame = None
         self.screen_geometry = None
-        self.rect_x_offset = 0  # For moving rectangle test
-        self.rect_width = 200
         self._hidden_for_capture = False
         
         self.init_ui()
@@ -32,11 +30,11 @@ class TransparentOverlayWindows(QWidget):
         self.update_timer.timeout.connect(self.update_mask)
         self.update_timer.start(33)  # ~30 FPS
 
-        # Auto-close after 10 seconds (debug recording duration)
+        # Auto-close after 30 seconds (debug recording duration)
         self.close_timer = QTimer(self)
         self.close_timer.setSingleShot(True)
         self.close_timer.timeout.connect(self.close_and_quit)
-        self.close_timer.start(10000)  # 10 seconds
+        self.close_timer.start(30000)  # 30 seconds
         
         print("[Overlay] Windows transparent overlay initialized")
     
@@ -127,37 +125,20 @@ class TransparentOverlayWindows(QWidget):
             # Update display
             self.update()
             
-            # Animate test rectangle
-            self.rect_x_offset = (self.rect_x_offset + 5) % (self.screen_geometry.width() + self.rect_width)
-            
         except Exception as e:
             print(f"[Overlay] Error in update_mask: {e}")
 
     def close_and_quit(self):
         """Close overlay and quit the application."""
-        print("[Overlay] 10 seconds elapsed, closing...")
+        print("[Overlay] Recording complete, closing...")
         self.close()
         QApplication.quit()
     
     def paintEvent(self, event):
-        """Paint the overlay - red tint over detected persons."""
+        """Paint the overlay - red tint over everything except detected persons."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        # For testing: draw a moving red rectangle
-        # Later this will be replaced with the actual segmentation mask
-        if True:  # Test mode
-            # Draw a semi-transparent red moving rectangle
-            rect_x = self.rect_x_offset - self.rect_width
-            rect_y = self.screen_geometry.height() // 2 - 100
-            rect_h = 200
-            
-            painter.fillRect(
-                rect_x, rect_y, self.rect_width, rect_h,
-                QColor(255, 0, 0, 128)  # Semi-transparent red
-            )
-        
-        # If we have a mask, draw it
         if self.current_mask is not None:
             try:
                 mask = self.current_mask
@@ -173,9 +154,9 @@ class TransparentOverlayWindows(QWidget):
                                 order=0, preserve_range=True, anti_aliasing=False)
                     mask = mask.astype(np.uint8)
                 
-                # Create a red overlay where mask > 0
+                # Create a red overlay where mask is background (inverted: cover everything except person)
                 overlay = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.uint8)
-                overlay[mask > 0] = [0, 0, 255, 128]  # Red with 50% transparency (RGBA)
+                overlay[mask <= 0] = [0, 0, 255, 128]  # Red with 50% transparency (RGBA) on background
                 
                 # Convert to QImage and draw
                 height, width = overlay.shape[:2]

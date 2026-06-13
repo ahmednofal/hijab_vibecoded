@@ -14,9 +14,7 @@ from multiprocessing import Process, Queue, Event
 
 from capture_windows import capture_worker_windows, list_windows_monitors
 from overlay_windows import run_overlay_windows
-
-# Temporarily commented out to bypass segmentation issues
-# from segmentation import segmentation_worker
+from segmentation import segmentation_worker
 
 
 class HijabOverlay:
@@ -72,11 +70,9 @@ class HijabOverlay:
         print()
         
         # TESTING MODE: Moving rectangle to test feedback loop
-        print("[Main] OVERLAY TEST:")
-        print("[Main] - Rectangle moves left to right")
-        print("[Main] - Windows MSS capture (fast)")
-        print("[Main] - Red bar should move over the background")
-        
+        print("[Main] SEGMENTATION MODE:")
+        print("[Main] - Capturing screen → segmenting → overlaying")
+
         # Start capture worker
         print("[Main] Starting capture worker...")
         self.capture_process = Process(
@@ -85,6 +81,16 @@ class HijabOverlay:
             daemon=True
         )
         self.capture_process.start()
+
+        # Start segmentation worker
+        print("[Main] Starting segmentation worker...")
+        self.segmentation_process = Process(
+            target=segmentation_worker,
+            args=(self.capture_queue, self.mask_queue, self.stop_event),
+            kwargs={'scale_factor': 0.5},
+            daemon=True
+        )
+        self.segmentation_process.start()
         
         # Setup signal handler for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
