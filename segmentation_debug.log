@@ -1,0 +1,1 @@
+17:02:41 CRITICAL: Failed to import mediapipe: module 'mediapipe' has no attribute 'solutions'

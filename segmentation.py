@@ -14,12 +14,13 @@ def log(msg):
 
 try:
     from mediapipe.python.solutions import selfie_segmentation as mp_selfie_segmentation
-    log("Imported mediapipe via mediapipe.python.solutions")
-except ImportError:
+    log("Imported via mediapipe.python.solutions")
+except (ImportError, AttributeError):
     try:
         import mediapipe as mp
-        mp_selfie_segmentation = mp.solutions.selfie_segmentation
-        log("Imported mediapipe via fallback mediapipe.solutions")
+        from mediapipe.python import solutions
+        mp_selfie_segmentation = solutions.selfie_segmentation
+        log("Imported via mediapipe.python.solutions fallback")
     except Exception as e:
         log(f"CRITICAL: Failed to import mediapipe: {e}")
         mp_selfie_segmentation = None
