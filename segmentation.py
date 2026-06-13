@@ -12,18 +12,28 @@ def log(msg):
     with open(_LOG_FILE, 'a') as f:
         f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
 
-try:
-    from mediapipe.python.solutions import selfie_segmentation as mp_selfie_segmentation
-    log("Imported via mediapipe.python.solutions")
-except (ImportError, AttributeError):
+# Try every known import path for MediaPipe SelfieSegmentation
+mp_selfie_segmentation = None
+import mediapipe as mp
+log(f"mediapipe version: {getattr(mp, '__version__', 'unknown')}")
+log(f"mediapipe dir: {[x for x in dir(mp) if not x.startswith('_')]}")
+
+import_paths = [
+    lambda: mp.solutions.selfie_segmentation,
+    lambda: __import__('mediapipe.python.solutions.selfie_segmentation', fromlist=['selfie_segmentation']).selfie_segmentation,
+    lambda: __import__('mediapipe.solutions.selfie_segmentation', fromlist=['selfie_segmentation']).selfie_segmentation,
+]
+
+for i, path_fn in enumerate(import_paths):
     try:
-        import mediapipe as mp
-        from mediapipe.python import solutions
-        mp_selfie_segmentation = solutions.selfie_segmentation
-        log("Imported via mediapipe.python.solutions fallback")
+        mp_selfie_segmentation = path_fn()
+        log(f"Import path {i} succeeded")
+        break
     except Exception as e:
-        log(f"CRITICAL: Failed to import mediapipe: {e}")
-        mp_selfie_segmentation = None
+        log(f"Import path {i} failed: {e}")
+
+if mp_selfie_segmentation is None:
+    log("CRITICAL: All import paths failed for mediapipe SelfieSegmentation")
 
 
 def segmentation_worker(
