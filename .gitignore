@@ -23,3 +23,4 @@ Thumbs.db
 # Artifacts
 *.iso
 capture_debug*
+segmentation_debug*
