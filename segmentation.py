@@ -1,16 +1,28 @@
 """Segmentation worker using MediaPipe for person detection."""
 
+import os
 import time
 from multiprocessing import Queue, Event
 import numpy as np
 import cv2
 
+_LOG_FILE = os.path.join(os.environ.get('USERPROFILE', os.getcwd()), 'Desktop', 'segmentation_debug.log')
+
+def log(msg):
+    with open(_LOG_FILE, 'a') as f:
+        f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+
 try:
     from mediapipe.python.solutions import selfie_segmentation as mp_selfie_segmentation
+    log("Imported mediapipe via mediapipe.python.solutions")
 except ImportError:
-    # Try alternative import for different mediapipe versions
-    import mediapipe as mp
-    mp_selfie_segmentation = mp.solutions.selfie_segmentation
+    try:
+        import mediapipe as mp
+        mp_selfie_segmentation = mp.solutions.selfie_segmentation
+        log("Imported mediapipe via fallback mediapipe.solutions")
+    except Exception as e:
+        log(f"CRITICAL: Failed to import mediapipe: {e}")
+        mp_selfie_segmentation = None
 
 
 def segmentation_worker(
@@ -19,23 +31,18 @@ def segmentation_worker(
     stop_event: Event,
     scale_factor: float = 0.5
 ):
-    """
-    Continuously processes frames from input queue and outputs segmentation masks.
+    log(f"Starting segmentation worker (scale={scale_factor})")
     
-    Args:
-        input_queue: Queue to get frames from
-        output_queue: Queue to put segmentation masks into
-        stop_event: Event to signal when to stop processing
-        scale_factor: Factor to downscale frames before segmentation (for speed)
-    """
-    print(f"[Segmentation] Starting segmentation worker (scale={scale_factor})")
+    if mp_selfie_segmentation is None:
+        log("CRITICAL: mediapipe not available, exiting")
+        return
     
     # Initialize MediaPipe Selfie Segmentation
     try:
         segmenter = mp_selfie_segmentation.SelfieSegmentation(model_selection=0)
-        print("[Segmentation] MediaPipe initialized successfully")
+        log("MediaPipe initialized successfully")
     except Exception as e:
-        print(f"[Segmentation] Failed to initialize MediaPipe: {e}")
+        log(f"Failed to initialize MediaPipe: {e}")
         return
     
     try:
@@ -54,7 +61,7 @@ def segmentation_worker(
                 orig_height, orig_width = frame.shape[:2]
                 
                 if frame_count == 0:
-                    print(f"[Segmentation] First frame received: {orig_width}x{orig_height}")
+                    log(f"First frame received: {orig_width}x{orig_height}")
                 
                 # Downscale for faster processing if needed
                 if scale_factor < 1.0:
@@ -71,8 +78,16 @@ def segmentation_worker(
                 # Run segmentation
                 results = segmenter.process(small_frame)
                 
+                if results is None:
+                    log("WARNING: segmenter.process returned None")
+                    continue
+                
                 # Get the segmentation mask
                 mask = results.segmentation_mask
+                
+                if mask is None:
+                    log("WARNING: segmentation_mask is None")
+                    continue
                 
                 # Upscale mask back to original size if needed
                 if scale_factor < 1.0:
@@ -88,28 +103,29 @@ def segmentation_worker(
                 if frame_count == 0:
                     person_pixels = int(binary_mask.sum())
                     total_pixels = binary_mask.size
-                    print(f"[Segmentation] First mask: person={person_pixels}/{total_pixels} pixels ({100.0 * person_pixels / total_pixels:.1f}%)")
+                    log(f"First mask: person={person_pixels}/{total_pixels} ({100.0 * person_pixels / total_pixels:.1f}%)")
                 
                 # Try to put mask in queue (non-blocking)
                 try:
                     output_queue.put(binary_mask, block=False)
                     frame_count += 1
                 except:
-                    # Queue is full, drop this mask
                     pass
                 
-                # Print FPS every 30 frames
+                # Log FPS every 30 frames
                 if frame_count % 30 == 0:
                     elapsed = time.time() - start_time
                     fps = frame_count / elapsed
-                    print(f"[Segmentation] FPS: {fps:.2f}")
+                    log(f"FPS: {fps:.2f}")
                     frame_count = 0
                     start_time = time.time()
                 
             except Exception as e:
-                print(f"[Segmentation] Error: {e}")
+                log(f"Processing error: {e}")
                 time.sleep(0.1)
     
+    except Exception as e:
+        log(f"Fatal error in segmentation worker: {e}")
     finally:
         segmenter.close()
-        print("[Segmentation] Segmentation worker stopped")
+        log("Segmentation worker stopped")
