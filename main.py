@@ -2,32 +2,18 @@
 """
 Hijab by Copilot - Real-time person overlay using semantic segmentation.
 
-This application captures the screen, detects people, and overlays them
+Captures the screen, detects people, and overlays them
 with a red semi-transparent hue in real-time.
 
-Supports Linux (X11/Wayland) and Windows.
+Windows-only version.
 """
 
 import sys
 import signal
-import os
-import platform
 from multiprocessing import Process, Queue, Event
-from PyQt6.QtWidgets import QApplication
 
-# Platform detection
-IS_WINDOWS = platform.system() == 'Windows'
-IS_LINUX = platform.system() == 'Linux'
-
-# Platform-specific imports
-if IS_WINDOWS:
-    from capture_windows import capture_worker_windows, list_windows_monitors
-    from overlay_windows import run_overlay_windows
-else:
-    from capture import capture_worker, is_wayland
-    # Import overlay types
-    from overlay import run_overlay as run_overlay_qt
-    from overlay_gtk3 import run_overlay as run_overlay_gtk3
+from capture_windows import capture_worker_windows, list_windows_monitors
+from overlay_windows import run_overlay_windows
 
 # Temporarily commented out to bypass segmentation issues
 # from segmentation import segmentation_worker
@@ -51,76 +37,20 @@ class HijabOverlay:
         self.segmentation_process = None
     
     def select_monitor(self):
-        """Detect monitors and select the internal one (not HP external).
+        """Detect monitors using MSS and select the primary one."""
+        print("[Main] Detecting monitors (Windows)...")
+        monitors = list_windows_monitors()
         
-        Returns:
-            Tuple of (monitor_index, geometry) where geometry is (x, y, width, height)
-        """
-        if IS_WINDOWS:
-            # Windows-specific monitor selection using MSS
-            print("[Main] Detecting monitors (Windows)...")
-            monitors = list_windows_monitors()
-            
-            if not monitors:
-                print("[Main] WARNING: No monitors detected, using primary (0)")
-                return 0, None
-            
-            # For now, use primary monitor (index 0)
-            # TODO: Add logic to skip HP external monitors on Windows
-            internal_monitor = 0
-            mon = monitors[0] if monitors else None
-            internal_geometry = (mon['left'], mon['top'], mon['width'], mon['height']) if mon else None
-            
-            print(f"[Main] Using monitor {internal_monitor}")
-            if internal_geometry:
-                print(f"       ^ Primary monitor (will use this)")
-            
-            return internal_monitor, internal_geometry
-        else:
-            # Linux monitor selection using PyQt6
-            app = QApplication.instance()
-            if app is None:
-                app = QApplication(sys.argv)
-            
-            screens = app.screens()
-            print(f"[Main] Detected {len(screens)} monitor(s):")
-            
-            internal_monitor = None
-            internal_geometry = None
-            for i, screen in enumerate(screens):
-                geom = screen.geometry()
-                name = screen.name()
-                manufacturer = screen.manufacturer()
-                model = screen.model()
-                
-                info = f"  [{i}] {name}: {geom.width()}x{geom.height()}"
-                if manufacturer:
-                    info += f" ({manufacturer}"
-                if model:
-                    info += f" {model}" if manufacturer else f" ({model}"
-                if manufacturer or model:
-                    info += ")"
-                
-                print(info)
-                
-                # Skip HP external monitors
-                is_hp = 'HP' in str(manufacturer).upper() or 'HP' in str(model).upper() or 'HP' in str(name).upper()
-                
-                if not is_hp and internal_monitor is None:
-                    internal_monitor = i
-                    internal_geometry = (geom.x(), geom.y(), geom.width(), geom.height())
-                    print(f"       ^ Internal monitor (will use this)")
-                elif is_hp:
-                    print(f"       ^ HP external (skipping)")
-            
-            if internal_monitor is None:
-                print("[Main] WARNING: Could not identify internal monitor, using primary (0)")
-                internal_monitor = 0
-                if screens:
-                    geom = screens[0].geometry()
-                    internal_geometry = (geom.x(), geom.y(), geom.width(), geom.height())
-            
-            return internal_monitor, internal_geometry
+        if not monitors:
+            print("[Main] WARNING: No monitors detected, using primary (0)")
+            return 0, None
+        
+        internal_monitor = 0
+        mon = monitors[0]
+        internal_geometry = (mon['left'], mon['top'], mon['width'], mon['height'])
+        
+        print(f"[Main] Using monitor {internal_monitor}: {mon['width']}x{mon['height']}")
+        return internal_monitor, internal_geometry
     
     def start(self):
         """Start all worker processes and the overlay."""
@@ -141,40 +71,19 @@ class HijabOverlay:
             print(f"[Main] Monitor geometry: x={monitor_geometry[0]}, y={monitor_geometry[1]}, {monitor_geometry[2]}x{monitor_geometry[3]}")
         print()
         
-        # Capture background BEFORE showing overlay (for Wayland)
-        background_image = None
-        if not IS_WINDOWS and is_wayland() and monitor_geometry:
-            print("[Main] Capturing background before showing overlay...")
-            from capture import capture_wayland_gnome
-            background_image = capture_wayland_gnome(monitor_geometry)
-            if background_image is not None:
-                print(f"[Main] Background captured: {background_image.shape}")
-            else:
-                print("[Main] WARNING: Failed to capture background")
-        
         # TESTING MODE: Moving rectangle to test feedback loop
         print("[Main] OVERLAY TEST:")
         print("[Main] - Rectangle moves left to right")
-        if IS_WINDOWS:
-            print("[Main] - Windows MSS capture (fast)")
-        else:
-            print("[Main] - Background is pre-captured (static)" if background_image is not None else "[Main] - X11 live capture")
+        print("[Main] - Windows MSS capture (fast)")
         print("[Main] - Red bar should move over the background")
         
         # Start capture worker
         print("[Main] Starting capture worker...")
-        if IS_WINDOWS:
-            self.capture_process = Process(
-                target=capture_worker_windows,
-                args=(self.capture_queue, self.stop_event, monitor_index, self.overlay_id_queue, monitor_geometry, self.hide_signal_queue),
-                daemon=True
-            )
-        else:
-            self.capture_process = Process(
-                target=capture_worker,
-                args=(self.capture_queue, self.stop_event, monitor_index, self.overlay_id_queue, monitor_geometry, self.hide_signal_queue),
-                daemon=True
-            )
+        self.capture_process = Process(
+            target=capture_worker_windows,
+            args=(self.capture_queue, self.stop_event, monitor_index, self.overlay_id_queue, monitor_geometry, self.hide_signal_queue),
+            daemon=True
+        )
         self.capture_process.start()
         
         # Setup signal handler for graceful shutdown
@@ -184,17 +93,10 @@ class HijabOverlay:
         print("[Main] Starting overlay window...")
         print()
         
-        # Use platform-specific overlay
+        # Start overlay window
         try:
-            if IS_WINDOWS:
-                print("[Main] Using Windows PyQt6 overlay")
-                run_overlay_windows(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue)
-            elif is_wayland():
-                print("[Main] Using GTK3 overlay with pre-captured background")
-                run_overlay_gtk3(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue, background_image)
-            else:
-                print("[Main] Using PyQt6 overlay")
-                run_overlay_qt(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue)
+            print("[Main] Using Windows PyQt6 overlay")
+            run_overlay_windows(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue)
         except KeyboardInterrupt:
             print("\n[Main] Keyboard interrupt received")
         except Exception as e:
@@ -234,38 +136,8 @@ class HijabOverlay:
     
     def check_requirements(self):
         """Check if system meets requirements."""
-        import os
-        
-        if IS_WINDOWS:
-            print(f"[Main] Platform: Windows")
-            print("[Main] Windows version detected - using MSS for screen capture")
-            print()
-            return
-        
-        # Linux-specific checks
-        session_type = os.environ.get('XDG_SESSION_TYPE', 'unknown')
-        print(f"[Main] Session type: {session_type}")
-        
-        if session_type == 'wayland':
-            print("[Main] WARNING: Running on Wayland. This application requires X11.")
-            print("[Main] Please switch to X11 session or this may not work correctly.")
-        elif session_type == 'x11':
-            print("[Main] X11 detected - good!")
-        else:
-            print(f"[Main] WARNING: Unknown session type: {session_type}")
-        
-        # Check for compositor (optional but recommended)
-        try:
-            from Xlib import X, display
-            d = display.Display()
-            screen = d.screen()
-            
-            # Check for compositor atom
-            atom = d.intern_atom(f'_NET_WM_CM_S{screen.root.get_full_property(d.intern_atom("_NET_WM_CM_S0"), X.AnyPropertyType).value[0] if screen.root.get_full_property(d.intern_atom("_NET_WM_CM_S0"), X.AnyPropertyType) else 0}')
-            print("[Main] Compositor check: OK (transparency should work)")
-        except:
-            print("[Main] WARNING: Could not detect compositor. Transparency may not work.")
-        
+        print(f"[Main] Platform: Windows")
+        print("[Main] Using MSS for screen capture")
         print()
 
 

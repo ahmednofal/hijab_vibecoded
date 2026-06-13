@@ -3,7 +3,7 @@
 import numpy as np
 from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPainter, QColor, QPixmap, QImage
+from PyQt6.QtGui import QPainter, QColor, QImage
 from multiprocessing import Queue
 import sys
 import ctypes
