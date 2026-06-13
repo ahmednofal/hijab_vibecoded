@@ -22,4 +22,4 @@ Thumbs.db
 
 # Artifacts
 *.iso
-*.mp4
+capture_debug*

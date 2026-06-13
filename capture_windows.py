@@ -138,7 +138,7 @@ def capture_worker_windows(output_queue: Queue, stop_event: Event, monitor_index
     capture_delay = 0.01  # 10ms delay for ~60fps max
 
     video_writer = None
-    video_path = os.path.join(os.getcwd(), 'capture_debug.mp4')
+    video_path = os.path.join(os.getcwd(), 'capture_debug.avi')
     if HAS_CV2:
         print(f"[Capture] Recording debug video to: {video_path}")
 
@@ -152,11 +152,11 @@ def capture_worker_windows(output_queue: Queue, stop_event: Event, monitor_index
 
             frame_count += 1
 
-            # Write every frame to MP4
+            # Write every frame to video
             if HAS_CV2:
                 if video_writer is None:
                     h, w = frame.shape[:2]
-                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    fourcc = cv2.VideoWriter_fourcc(*'MJPG')
                     video_writer = cv2.VideoWriter(video_path, fourcc, 30.0, (w, h))
                     print(f"[Capture] Video writer initialized: {w}x{h} @ 30fps")
                 video_writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
