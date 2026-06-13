@@ -31,6 +31,12 @@ class TransparentOverlayWindows(QWidget):
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update_mask)
         self.update_timer.start(33)  # ~30 FPS
+
+        # Auto-close after 10 seconds (debug recording duration)
+        self.close_timer = QTimer(self)
+        self.close_timer.setSingleShot(True)
+        self.close_timer.timeout.connect(self.close_and_quit)
+        self.close_timer.start(10000)  # 10 seconds
         
         print("[Overlay] Windows transparent overlay initialized")
     
@@ -126,6 +132,12 @@ class TransparentOverlayWindows(QWidget):
             
         except Exception as e:
             print(f"[Overlay] Error in update_mask: {e}")
+
+    def close_and_quit(self):
+        """Close overlay and quit the application."""
+        print("[Overlay] 10 seconds elapsed, closing...")
+        self.close()
+        QApplication.quit()
     
     def paintEvent(self, event):
         """Paint the overlay - red tint over detected persons."""

@@ -160,8 +160,8 @@ def capture_worker_windows(output_queue: Queue, stop_event: Event, monitor_index
             
             frame_count += 1
 
-            # Save every 100th frame as PNG for debug inspection
-            if save_frames and frame_count % 100 == 0:
+            # Save every frame as PNG for debug recording
+            if save_frames:
                 try:
                     img = Image.fromarray(frame)
                     img.save(os.path.join(frames_dir, f'frame_{frame_count:06d}.png'))
