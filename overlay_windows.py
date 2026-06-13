@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPainter, QColor, QPixmap, QImage
 from multiprocessing import Queue
 import sys
+import ctypes
 
 
 class TransparentOverlayWindows(QWidget):
@@ -69,6 +70,15 @@ class TransparentOverlayWindows(QWidget):
         try:
             self.overlay_hwnd = int(self.winId())
             print(f"[Overlay] Window HWND: {self.overlay_hwnd}")
+            # Exclude this window from BitBlt-based screen captures (Windows 10 2004+)
+            WDA_EXCLUDEFROMCAPTURE = 0x00000011
+            result = ctypes.windll.user32.SetWindowDisplayAffinity(
+                self.overlay_hwnd, WDA_EXCLUDEFROMCAPTURE
+            )
+            if result:
+                print("[Overlay] WDA_EXCLUDEFROMCAPTURE set successfully")
+            else:
+                print(f"[Overlay] WARNING: SetWindowDisplayAffinity failed (error {ctypes.get_last_error()})")
         except:
             print("[Overlay] WARNING: Could not get window HWND")
             self.overlay_hwnd = None

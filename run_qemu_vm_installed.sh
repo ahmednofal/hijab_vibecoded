@@ -11,7 +11,7 @@ if [ ! -f "$DISK_IMG" ]; then
 fi
 
 echo "============================================================"
-echo " Starting Windows 11 VM"
+echo " Starting Windows VM"
 echo "============================================================"
 echo ""
 echo " Your project folder is shared via SMB"
@@ -24,32 +24,17 @@ echo "   Ctrl+Alt+Q - Quit VM"
 echo "============================================================"
 echo ""
 
-# Create UEFI vars file if it doesn't exist
+# Create UEFI vars file if it doesn't exist (non-MS = no Secure Boot)
 EFIVARS_FILE="$HOME/.local/share/qemu/efivars-$VM_NAME.fd"
 if [ ! -f "$EFIVARS_FILE" ]; then
     echo "Creating UEFI variables file..."
     mkdir -p "$(dirname "$EFIVARS_FILE")"
-    cp /usr/share/OVMF/OVMF_VARS_4M.ms.fd "$EFIVARS_FILE" 2>/dev/null || \
+    cp /usr/share/OVMF/OVMF_VARS_4M.fd "$EFIVARS_FILE" 2>/dev/null || \
     cp /usr/share/OVMF/OVMF_VARS.fd "$EFIVARS_FILE" 2>/dev/null || \
     dd if=/dev/zero of="$EFIVARS_FILE" bs=1M count=64
 fi
 
-# Prepare TPM directory
-TPM_DIR="$HOME/.local/share/qemu/tpm-$VM_NAME"
-mkdir -p "$TPM_DIR"
-
-# Start TPM emulator
-echo "Starting TPM emulator..."
-swtpm socket --tpmstate dir="$TPM_DIR" \
-    --ctrl type=unixio,path="$TPM_DIR/swtpm-sock" \
-    --tpm2 \
-    --log level=20 &
-
-TPM_PID=$!
-sleep 1
-
-# Find correct OVMF files
-OVMF_CODE="/usr/share/OVMF/OVMF_CODE_4M.ms.fd"
+OVMF_CODE="/usr/share/OVMF/OVMF_CODE_4M.fd"
 if [ ! -f "$OVMF_CODE" ]; then
     OVMF_CODE="/usr/share/OVMF/OVMF_CODE.fd"
 fi
@@ -68,18 +53,12 @@ qemu-system-x86_64 \
     -device ich9-ahci,id=ahci \
     -device ide-hd,drive=hd0,bus=ahci.0 \
     -boot c \
-    -chardev socket,id=chrtpm,path="$TPM_DIR/swtpm-sock" \
-    -tpmdev emulator,id=tpm0,chardev=chrtpm \
-    -device tpm-tis,tpmdev=tpm0 \
     -netdev user,id=net0,smb="$PWD" \
     -device e1000,netdev=net0 \
     -vga std \
     -display gtk \
     -usb \
     -device usb-tablet
-
-# Kill TPM emulator
-kill $TPM_PID 2>/dev/null
 
 echo ""
 echo "VM exited."

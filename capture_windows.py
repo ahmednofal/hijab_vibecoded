@@ -1,10 +1,17 @@
 """Windows-specific screen capture worker using MSS and Win32 API."""
 
+import os
 import time
 from multiprocessing import Queue, Event
 import numpy as np
 import mss
 import mss.tools
+
+try:
+    import cv2
+    HAS_CV2 = True
+except ImportError:
+    HAS_CV2 = False
 
 
 def capture_windows(monitor_index: int = 0):
@@ -129,22 +136,40 @@ def capture_worker_windows(output_queue: Queue, stop_event: Event, monitor_index
     error_count = 0
     max_consecutive_errors = 10
     capture_delay = 0.01  # 10ms delay for ~60fps max
+
+    # Initialize video writer for debug recording
+    video_writer = None
+    if HAS_CV2:
+        try:
+            video_path = os.path.join(os.getcwd(), 'capture_debug.mp4')
+            print(f"[Capture] Recording debug video to: {video_path}")
+        except Exception as e:
+            print(f"[Capture] Could not create video dir: {e}")
     
     while not stop_event.is_set():
         try:
-            # Capture screen (with optional window exclusion)
-            if overlay_hwnd:
-                frame = capture_windows_exclude_window(monitor_index, overlay_hwnd)
-            else:
-                frame = capture_windows(monitor_index)
+            # Capture screen
+            # Note: overlay uses WDA_EXCLUDEFROMCAPTURE, so it's already excluded
+            # from BitBlt-based captures like MSS. No need for manual exclusion.
+            frame = capture_windows(monitor_index)
             
             if frame is None:
                 raise RuntimeError("Capture returned None")
             
+            frame_count += 1
+
+            # Write to debug video (first 10 seconds worth)
+            if HAS_CV2:
+                if video_writer is None:
+                    h, w = frame.shape[:2]
+                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    video_writer = cv2.VideoWriter(video_path, fourcc, 30.0, (w, h))
+                    print(f"[Capture] Video writer initialized: {w}x{h} @ 30fps")
+                video_writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+
             # Try to put frame in queue (non-blocking)
             try:
                 output_queue.put(frame, block=False)
-                frame_count += 1
                 error_count = 0
                 
                 if frame_count == 1:
@@ -171,6 +196,11 @@ def capture_worker_windows(output_queue: Queue, stop_event: Event, monitor_index
                 break
             
             time.sleep(0.5)
+    
+    # Cleanup video writer
+    if video_writer is not None:
+        video_writer.release()
+        print(f"[Capture] Debug video saved")
     
     print("[Capture] Capture worker stopped")
 
