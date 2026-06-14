@@ -1,9 +1,7 @@
-"""Segmentation worker using MediaPipe Tasks PoseLandmarker for multi-person body detection."""
+"""Segmentation worker using HOG people detector for multi-person body masks."""
 
 import os
 import time
-import ssl
-import urllib.request
 from multiprocessing import Queue, Event
 import numpy as np
 import cv2
@@ -13,74 +11,6 @@ _LOG_FILE = os.path.join(os.getcwd(), 'segmentation_debug.log')
 def log(msg):
     with open(_LOG_FILE, 'a') as f:
         f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
-
-MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'pose_landmarker_lite.task')
-_MIN_MODEL_SIZE = 100000
-
-_FACE_LANDMARK_IDS = list(range(0, 11))
-
-
-def _model_valid():
-    if not os.path.exists(MODEL_PATH):
-        return False
-    try:
-        return os.path.getsize(MODEL_PATH) > _MIN_MODEL_SIZE
-    except OSError:
-        return False
-
-
-def _ensure_model():
-    if _model_valid():
-        log(f"Pose model exists ({os.path.getsize(MODEL_PATH)} bytes)")
-        return
-    log("Downloading pose_landmarker_lite model...")
-    try:
-        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-    except Exception:
-        log("SSL download failed, retrying with unverified context...")
-        ctx = ssl._create_unverified_context()
-        resp = urllib.request.urlopen(MODEL_URL, context=ctx)
-        with open(MODEL_PATH, 'wb') as f:
-            f.write(resp.read())
-    size = os.path.getsize(MODEL_PATH)
-    log(f"Model downloaded ({size} bytes)")
-
-
-def _body_mask_from_landmarks(landmarks, img_w, img_h, body_pad=0.15):
-    xs = [lm.x * img_w for lm in landmarks]
-    ys = [lm.y * img_h for lm in landmarks]
-    x1, x2 = min(xs), max(xs)
-    y1, y2 = min(ys), max(ys)
-    bw = x2 - x1
-    bh = y2 - y1
-    pad_x = int(bw * body_pad)
-    pad_y = int(bh * body_pad)
-    x1 = max(0, int(x1) - pad_x)
-    y1 = max(0, int(y1) - pad_y)
-    x2 = min(img_w, int(x2) + pad_x)
-    y2 = min(img_h, int(y2) + pad_y)
-    mask = np.zeros((img_h, img_w), dtype=np.uint8)
-    mask[y1:y2, x1:x2] = 1
-    return mask
-
-
-def _face_mask_from_landmarks(landmarks, img_w, img_h, face_expand=0.5):
-    xs = [landmarks[i].x * img_w for i in _FACE_LANDMARK_IDS]
-    ys = [landmarks[i].y * img_h for i in _FACE_LANDMARK_IDS]
-    x1, x2 = min(xs), max(xs)
-    y1, y2 = min(ys), max(ys)
-    fw = x2 - x1
-    fh = y2 - y1
-    expand_x = int(fw * face_expand)
-    expand_y = int(fh * face_expand)
-    x1 = max(0, int(x1) - expand_x)
-    y1 = max(0, int(y1) - expand_y)
-    x2 = min(img_w, int(x2) + expand_x)
-    y2 = min(img_h, int(y2) + expand_y)
-    mask = np.zeros((img_h, img_w), dtype=np.uint8)
-    mask[y1:y2, x1:x2] = 1
-    return mask
 
 
 def segmentation_worker(
@@ -94,40 +24,31 @@ def segmentation_worker(
 
     log(f"Starting segmentation worker (scale={scale_factor})")
 
+    # Initialize HOG people detector
     try:
-        _ensure_model()
+        hog = cv2.HOGDescriptor()
+        hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+        log("HOG people detector initialized")
     except Exception as e:
-        log(f"CRITICAL: Model not available: {e}")
+        log(f"CRITICAL: Failed to initialize HOG detector: {e}")
         return
 
+    # Initialize face cascade
     try:
-        from mediapipe.tasks import python
-        from mediapipe.tasks.python import vision
-        import mediapipe as mp
-    except Exception as e:
-        log(f"CRITICAL: Failed to import MediaPipe Tasks API: {e}")
-        return
-
-    try:
-        base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
-        options = vision.PoseLandmarkerOptions(
-            base_options=base_options,
-            running_mode=vision.RunningMode.IMAGE,
-            num_poses=5,
-            min_pose_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
+        face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         )
-        landmarker = vision.PoseLandmarker.create_from_options(options)
-        log("PoseLandmarker initialized")
+        log("Face cascade loaded")
     except Exception as e:
-        log(f"Failed to initialize PoseLandmarker: {e}")
-        return
+        log(f"WARNING: Face cascade failed: {e}")
+        face_cascade = None
 
     try:
         frame_count = 0
         start_time = time.time()
-        prev_detect_time = 0.0
-        min_detect_interval = 0.5  # max 2 detections per second
+        hog_interval = 0.3
+        last_hog_time = 0.0
+        last_mask = None
 
         while not stop_event.is_set():
             try:
@@ -141,12 +62,11 @@ def segmentation_worker(
                 if frame_count == 0:
                     log(f"First frame: {orig_w}x{orig_h}")
 
-                # Limit detection rate
                 now = time.time()
-                do_detect = (now - prev_detect_time) >= min_detect_interval
+                if (now - last_hog_time) >= hog_interval:
+                    last_hog_time = now
 
-                if do_detect:
-                    prev_detect_time = now
+                    # Downscale for speed
                     if scale_factor < 1.0:
                         small = cv2.resize(
                             frame, None, fx=scale_factor, fy=scale_factor,
@@ -156,38 +76,67 @@ def segmentation_worker(
                         small = frame
 
                     sh, sw = small.shape[:2]
-                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=small)
-                    result = landmarker.detect(mp_image)
+                    gray = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
 
+                    # HOG people detection
+                    boxes, _ = hog.detectMultiScale(
+                        gray, winStride=(4, 4), padding=(8, 8), scale=1.05
+                    )
+
+                    # Create body mask from bounding boxes
                     combined = np.zeros((sh, sw), dtype=np.uint8)
-                    if result.pose_landmarks:
-                        for pose_lm in result.pose_landmarks:
-                            body = _body_mask_from_landmarks(pose_lm, sw, sh)
-                            face = _face_mask_from_landmarks(pose_lm, sw, sh)
-                            combined = np.maximum(combined, body & (1 - face))
+                    for (x, y, w, h) in boxes:
+                        # Expand bounding box upward (head may be partially detected)
+                        exp_y = max(0, y - int(h * 0.15))
+                        exp_h = min(sh - exp_y, h + int(h * 0.15))
+                        exp_x = max(0, x - int(w * 0.1))
+                        exp_w = min(sw - exp_x, w + int(w * 0.1))
+                        combined[exp_y:exp_y+exp_h, exp_x:exp_x+exp_w] = 1
 
-                    if frame_count == 0:
-                        n = len(result.pose_landmarks) if result.pose_landmarks else 0
-                        log(f"Detected {n} persons")
-                        p = int(combined.sum())
-                        t = orig_w * orig_h
-                        log(f"First mask: body={p}/{t} ({100.0*p/t:.1f}%)")
+                    # Face detection — remove face areas from body mask
+                    if face_cascade is not None and len(boxes) > 0:
+                        try:
+                            faces = face_cascade.detectMultiScale(
+                                gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20)
+                            )
+                            for (fx, fy, fw, fh) in faces:
+                                expand = 0.5
+                                fx2 = max(0, int(fx - fw * expand))
+                                fy2 = max(0, int(fy - fh * expand))
+                                rw = min(sw - fx2, int(fw * (1 + 2 * expand)))
+                                rh = min(sh - fy2, int(fh * (1 + 2 * expand)))
+                                combined[fy2:fy2+rh, fx2:fx2+rw] = 0
+                            if frame_count == 0:
+                                log(f"Excluded {len(faces)} faces")
+                        except Exception as e:
+                            pass
 
+                    # Upscale to original size
                     if scale_factor < 1.0:
                         combined = cv2.resize(
                             combined, (orig_w, orig_h),
                             interpolation=cv2.INTER_NEAREST
                         )
 
-                    # Push mask to overlay
+                    last_mask = combined
+
+                    if frame_count == 0:
+                        log(f"Detected {len(boxes)} persons")
+                        p = int(combined.sum())
+                        t = orig_w * orig_h
+                        log(f"First mask: body={p}/{t} ({100.0*p/t:.1f}%)")
+
+                    if frame_count > 0 and frame_count % 30 == 0:
+                        elapsed = now - start_time
+                        fps = frame_count / elapsed
+                        log(f"Processing FPS: {fps:.2f}")
+
+                # Push latest mask (even if HOG didn't run — reuse last)
+                if last_mask is not None:
                     try:
-                        output_queue.put(combined, block=False)
+                        output_queue.put(last_mask, block=False)
                     except:
                         pass
-
-                    if frame_count > 0 and frame_count % 50 == 0:
-                        elapsed = now - start_time
-                        log(f"Detect FPS: {frame_count / elapsed:.2f}")
 
                 frame_count += 1
 
@@ -198,5 +147,4 @@ def segmentation_worker(
     except Exception as e:
         log(f"Fatal error: {e}")
     finally:
-        landmarker.close()
         log("Segmentation worker stopped")
