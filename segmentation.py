@@ -1,9 +1,7 @@
-"""Segmentation worker using MediaPipe Tasks PoseLandmarker for multi-person body detection."""
+"""Segmentation worker using SegFormer for multi-person semantic segmentation."""
 
 import os
 import time
-import ssl
-import urllib.request
 from multiprocessing import Queue, Event
 import numpy as np
 import cv2
@@ -13,74 +11,6 @@ _LOG_FILE = os.path.join(os.getcwd(), 'segmentation_debug.log')
 def log(msg):
     with open(_LOG_FILE, 'a') as f:
         f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
-
-MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'pose_landmarker_lite.task')
-_MIN_MODEL_SIZE = 100000
-
-_FACE_LANDMARK_IDS = list(range(0, 11))
-
-
-def _model_valid():
-    if not os.path.exists(MODEL_PATH):
-        return False
-    try:
-        return os.path.getsize(MODEL_PATH) > _MIN_MODEL_SIZE
-    except OSError:
-        return False
-
-
-def _ensure_model():
-    if _model_valid():
-        log(f"Pose model exists ({os.path.getsize(MODEL_PATH)} bytes)")
-        return
-    log("Downloading pose_landmarker_lite model...")
-    try:
-        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-    except Exception:
-        log("SSL download failed, retrying with unverified context...")
-        ctx = ssl._create_unverified_context()
-        resp = urllib.request.urlopen(MODEL_URL, context=ctx)
-        with open(MODEL_PATH, 'wb') as f:
-            f.write(resp.read())
-    size = os.path.getsize(MODEL_PATH)
-    log(f"Model downloaded ({size} bytes)")
-
-
-def _body_mask_from_landmarks(landmarks, img_w, img_h, body_pad=0.15):
-    xs = [lm.x * img_w for lm in landmarks]
-    ys = [lm.y * img_h for lm in landmarks]
-    x1, x2 = min(xs), max(xs)
-    y1, y2 = min(ys), max(ys)
-    bw = x2 - x1
-    bh = y2 - y1
-    pad_x = int(bw * body_pad)
-    pad_y = int(bh * body_pad)
-    x1 = max(0, int(x1) - pad_x)
-    y1 = max(0, int(y1) - pad_y)
-    x2 = min(img_w, int(x2) + pad_x)
-    y2 = min(img_h, int(y2) + pad_y)
-    mask = np.zeros((img_h, img_w), dtype=np.uint8)
-    mask[y1:y2, x1:x2] = 1
-    return mask
-
-
-def _face_mask_from_landmarks(landmarks, img_w, img_h, face_expand=0.5):
-    xs = [landmarks[i].x * img_w for i in _FACE_LANDMARK_IDS]
-    ys = [landmarks[i].y * img_h for i in _FACE_LANDMARK_IDS]
-    x1, x2 = min(xs), max(xs)
-    y1, y2 = min(ys), max(ys)
-    fw = x2 - x1
-    fh = y2 - y1
-    expand_x = int(fw * face_expand)
-    expand_y = int(fh * face_expand)
-    x1 = max(0, int(x1) - expand_x)
-    y1 = max(0, int(y1) - expand_y)
-    x2 = min(img_w, int(x2) + expand_x)
-    y2 = min(img_h, int(y2) + expand_y)
-    mask = np.zeros((img_h, img_w), dtype=np.uint8)
-    mask[y1:y2, x1:x2] = 1
-    return mask
 
 
 def segmentation_worker(
@@ -94,108 +24,138 @@ def segmentation_worker(
 
     log(f"Starting segmentation worker (scale={scale_factor})")
 
+    # Import SegFormer
     try:
-        _ensure_model()
+        from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation
+        import torch
+        log("SegFormer dependencies loaded")
     except Exception as e:
-        log(f"CRITICAL: Model not available: {e}")
+        log(f"CRITICAL: Failed to import SegFormer: {e}")
         return
 
+    # Load model
+    model_name = "nvidia/segformer-b0-finetuned-ade-512-512"
     try:
-        from mediapipe.tasks import python
-        from mediapipe.tasks.python import vision
-        import mediapipe as mp
+        processor = SegformerImageProcessor.from_pretrained(model_name)
+        model = SegformerForSemanticSegmentation.from_pretrained(model_name)
+        model.eval()
+        log(f"SegFormer-B0 model loaded")
     except Exception as e:
-        log(f"CRITICAL: Failed to import MediaPipe Tasks API: {e}")
+        log(f"CRITICAL: Failed to load model: {e}")
         return
 
+    # Load face cascade
     try:
-        base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
-        options = vision.PoseLandmarkerOptions(
-            base_options=base_options,
-            running_mode=vision.RunningMode.IMAGE,
-            min_pose_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
+        face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         )
-        landmarker = vision.PoseLandmarker.create_from_options(options)
-        log("PoseLandmarker initialized")
+        log("Face cascade loaded")
     except Exception as e:
-        log(f"Failed to initialize PoseLandmarker: {e}")
-        return
+        log(f"WARNING: Face cascade failed: {e}")
+        face_cascade = None
 
     try:
         frame_count = 0
         start_time = time.time()
-        prev_detect_time = 0.0
-        min_detect_interval = 0.5  # max 2 detections per second
+        detect_interval = 0.5
+        last_detect_time = 0.0
+        last_mask = None
 
-        while not stop_event.is_set():
-            try:
+        with torch.no_grad():
+            while not stop_event.is_set():
                 try:
-                    frame = input_queue.get(timeout=0.1)
-                except:
-                    continue
+                    try:
+                        frame = input_queue.get(timeout=0.1)
+                    except:
+                        continue
 
-                orig_h, orig_w = frame.shape[:2]
-
-                if frame_count == 0:
-                    log(f"First frame: {orig_w}x{orig_h}")
-
-                # Limit detection rate
-                now = time.time()
-                do_detect = (now - prev_detect_time) >= min_detect_interval
-
-                if do_detect:
-                    prev_detect_time = now
-                    if scale_factor < 1.0:
-                        small = cv2.resize(
-                            frame, None, fx=scale_factor, fy=scale_factor,
-                            interpolation=cv2.INTER_LINEAR
-                        )
-                    else:
-                        small = frame
-
-                    sh, sw = small.shape[:2]
-                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=small)
-                    result = landmarker.detect(mp_image)
-
-                    combined = np.zeros((sh, sw), dtype=np.uint8)
-                    if result.pose_landmarks:
-                        for pose_lm in result.pose_landmarks:
-                            body = _body_mask_from_landmarks(pose_lm, sw, sh)
-                            face = _face_mask_from_landmarks(pose_lm, sw, sh)
-                            combined = np.maximum(combined, body & (1 - face))
+                    orig_h, orig_w = frame.shape[:2]
 
                     if frame_count == 0:
-                        n = len(result.pose_landmarks) if result.pose_landmarks else 0
-                        log(f"Detected {n} persons")
-                        p = int(combined.sum())
-                        t = orig_w * orig_h
-                        log(f"First mask: body={p}/{t} ({100.0*p/t:.1f}%)")
+                        log(f"First frame: {orig_w}x{orig_h}")
 
-                    if scale_factor < 1.0:
-                        combined = cv2.resize(
-                            combined, (orig_w, orig_h),
-                            interpolation=cv2.INTER_NEAREST
+                    now = time.time()
+                    if (now - last_detect_time) >= detect_interval:
+                        last_detect_time = now
+
+                        # Downscale
+                        if scale_factor < 1.0:
+                            small = cv2.resize(
+                                frame, None, fx=scale_factor, fy=scale_factor,
+                                interpolation=cv2.INTER_LINEAR
+                            )
+                        else:
+                            small = frame
+
+                        # Run SegFormer
+                        inputs = processor(images=small, return_tensors="pt")
+                        outputs = model(**inputs)
+                        logits = outputs.logits
+
+                        # Upsample to downscaled frame size and get person class
+                        sh, sw = small.shape[:2]
+                        upsampled = torch.nn.functional.interpolate(
+                            logits, size=(sh, sw), mode='bilinear', align_corners=False
                         )
+                        pred = upsampled.argmax(dim=1)[0].cpu().numpy()
+                        # ADE20K class 12 = person
+                        combined = (pred == 12).astype(np.uint8)
 
-                    # Push mask to overlay
-                    try:
-                        output_queue.put(combined, block=False)
-                    except:
-                        pass
+                        num_persons = int(combined.sum() > 0)
+
+                        # Face exclusion
+                        if face_cascade is not None and num_persons > 0:
+                            try:
+                                gray = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
+                                faces = face_cascade.detectMultiScale(
+                                    gray, scaleFactor=1.1, minNeighbors=5, minSize=(15, 15)
+                                )
+                                for (fx, fy, fw, fh) in faces:
+                                    expand = 0.5
+                                    fx2 = max(0, int(fx - fw * expand))
+                                    fy2 = max(0, int(fy - fh * expand))
+                                    rw = min(sw - fx2, int(fw * (1 + 2 * expand)))
+                                    rh = min(sh - fy2, int(fh * (1 + 2 * expand)))
+                                    combined[fy2:fy2+rh, fx2:fx2+rw] = 0
+                                if frame_count == 0:
+                                    log(f"Excluded {len(faces)} faces")
+                            except Exception:
+                                pass
+
+                        # Upscale to original size
+                        if scale_factor < 1.0:
+                            combined = cv2.resize(
+                                combined, (orig_w, orig_h),
+                                interpolation=cv2.INTER_NEAREST
+                            )
+
+                        last_mask = combined
+
+                        if frame_count == 0:
+                            has_person = int(combined.sum() > 0)
+                            p = int(combined.sum())
+                            t = orig_w * orig_h
+                            log(f"Person pixels: {p}/{t} ({100.0*p/t:.1f}%)")
+
+                    # Push mask every frame
+                    if last_mask is not None:
+                        try:
+                            output_queue.put(last_mask, block=False)
+                        except:
+                            pass
 
                     if frame_count > 0 and frame_count % 50 == 0:
                         elapsed = now - start_time
-                        log(f"Detect FPS: {frame_count / elapsed:.2f}")
+                        fps = frame_count / elapsed
+                        log(f"Frame FPS: {fps:.2f}")
 
-                frame_count += 1
+                    frame_count += 1
 
-            except Exception as e:
-                log(f"Processing error: {e}")
-                time.sleep(0.1)
+                except Exception as e:
+                    log(f"Processing error: {e}")
+                    time.sleep(0.1)
 
     except Exception as e:
         log(f"Fatal error: {e}")
     finally:
-        landmarker.close()
         log("Segmentation worker stopped")
