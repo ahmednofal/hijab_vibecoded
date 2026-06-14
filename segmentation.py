@@ -16,18 +16,34 @@ def log(msg):
 
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite"
 MODEL_PATH = os.path.join(os.path.dirname(__file__), 'selfie_segmenter.tflite')
+_MIN_MODEL_SIZE = 100000  # 100KB minimum
+
+
+def _model_valid():
+    if not os.path.exists(MODEL_PATH):
+        return False
+    try:
+        return os.path.getsize(MODEL_PATH) > _MIN_MODEL_SIZE
+    except OSError:
+        return False
 
 
 def _ensure_model():
-    if not os.path.exists(MODEL_PATH):
-        log(f"Downloading selfie_segmenter model...")
-        try:
-            urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-        except Exception:
-            log("SSL download failed, retrying with unverified context...")
-            ctx = ssl._create_unverified_context()
-            urllib.request.urlretrieve(MODEL_URL, MODEL_PATH, context=ctx)
-        log(f"Model downloaded to {MODEL_PATH}")
+    if _model_valid():
+        log(f"Model exists ({os.path.getsize(MODEL_PATH)} bytes)")
+        return
+
+    log(f"Downloading selfie_segmenter model...")
+    try:
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+    except Exception:
+        log("SSL download failed, retrying with unverified context...")
+        ctx = ssl._create_unverified_context()
+        resp = urllib.request.urlopen(MODEL_URL, context=ctx)
+        with open(MODEL_PATH, 'wb') as f:
+            f.write(resp.read())
+    size = os.path.getsize(MODEL_PATH)
+    log(f"Model downloaded ({size} bytes)")
 
 
 def segmentation_worker(
