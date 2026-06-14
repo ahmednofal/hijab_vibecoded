@@ -18,7 +18,7 @@ MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pos
 MODEL_PATH = os.path.join(os.path.dirname(__file__), 'pose_landmarker_lite.task')
 _MIN_MODEL_SIZE = 100000
 
-_FACE_LANDMARK_IDS = list(range(0, 11))  # nose, eyes, ears, mouth
+_FACE_LANDMARK_IDS = list(range(0, 11))
 
 
 def _model_valid():
@@ -48,7 +48,6 @@ def _ensure_model():
 
 
 def _body_mask_from_landmarks(landmarks, img_w, img_h, body_pad=0.15):
-    """Create a body mask from pose landmarks using bounding box."""
     xs = [lm.x * img_w for lm in landmarks]
     ys = [lm.y * img_h for lm in landmarks]
     x1, x2 = min(xs), max(xs)
@@ -67,7 +66,6 @@ def _body_mask_from_landmarks(landmarks, img_w, img_h, body_pad=0.15):
 
 
 def _face_mask_from_landmarks(landmarks, img_w, img_h, face_expand=0.5):
-    """Create a face mask from face landmark indices."""
     xs = [landmarks[i].x * img_w for i in _FACE_LANDMARK_IDS]
     ys = [landmarks[i].y * img_h for i in _FACE_LANDMARK_IDS]
     x1, x2 = min(xs), max(xs)
@@ -96,24 +94,20 @@ def segmentation_worker(
 
     log(f"Starting segmentation worker (scale={scale_factor})")
 
-    # Download model if needed
     try:
         _ensure_model()
     except Exception as e:
         log(f"CRITICAL: Model not available: {e}")
         return
 
-    # Import mediapipe tasks API
     try:
         from mediapipe.tasks import python
         from mediapipe.tasks.python import vision
         import mediapipe as mp
-        log("MediaPipe Tasks API imported successfully")
     except Exception as e:
         log(f"CRITICAL: Failed to import MediaPipe Tasks API: {e}")
         return
 
-    # Initialize PoseLandmarker
     try:
         base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
         options = vision.PoseLandmarkerOptions(
@@ -130,30 +124,28 @@ def segmentation_worker(
 
     try:
         frame_count = 0
-        inf_count = 0
         start_time = time.time()
-        last_mask = None
+        prev_detect_time = 0.0
+        min_detect_interval = 0.5  # max 2 detections per second
 
         while not stop_event.is_set():
             try:
-                # Wait for a frame, then drain stale ones non-blocking
-                frame = None
                 try:
                     frame = input_queue.get(timeout=0.1)
-                    while not stop_event.is_set():
-                        try:
-                            frame = input_queue.get_nowait()
-                        except:
-                            break
                 except:
-                    pass
-                if frame is None:
                     continue
 
                 orig_h, orig_w = frame.shape[:2]
 
-                # Run inference every 3rd frame; reuse last mask for skipped frames
-                if inf_count % 3 == 0:
+                if frame_count == 0:
+                    log(f"First frame: {orig_w}x{orig_h}")
+
+                # Limit detection rate
+                now = time.time()
+                do_detect = (now - prev_detect_time) >= min_detect_interval
+
+                if do_detect:
+                    prev_detect_time = now
                     if scale_factor < 1.0:
                         small = cv2.resize(
                             frame, None, fx=scale_factor, fy=scale_factor,
@@ -174,32 +166,27 @@ def segmentation_worker(
                             combined = np.maximum(combined, body & (1 - face))
 
                     if frame_count == 0:
-                        log(f"Detected {len(result.pose_landmarks) if result.pose_landmarks else 0} persons")
+                        n = len(result.pose_landmarks) if result.pose_landmarks else 0
+                        log(f"Detected {n} persons")
+                        p = int(combined.sum())
+                        t = orig_w * orig_h
+                        log(f"First mask: body={p}/{t} ({100.0*p/t:.1f}%)")
 
-                    # Upscale to original size
                     if scale_factor < 1.0:
                         combined = cv2.resize(
                             combined, (orig_w, orig_h),
                             interpolation=cv2.INTER_NEAREST
                         )
 
-                    last_mask = combined
-                    inf_count += 1
-
-                    if frame_count == 0:
-                        body_pixels = int(combined.sum())
-                        log(f"First mask: body={body_pixels}/{orig_w*orig_h} ({100.0*body_pixels/(orig_w*orig_h):.1f}%)")
-
-                    if inf_count % 10 == 0:
-                        elapsed = time.time() - start_time
-                        log(f"Inference FPS: {inf_count / elapsed:.2f}")
-
-                # Reuse last mask for skipped frames
-                if last_mask is not None:
+                    # Push mask to overlay
                     try:
-                        output_queue.put(last_mask, block=False)
+                        output_queue.put(combined, block=False)
                     except:
                         pass
+
+                    if frame_count > 0 and frame_count % 50 == 0:
+                        elapsed = now - start_time
+                        log(f"Detect FPS: {frame_count / elapsed:.2f}")
 
                 frame_count += 1
 
