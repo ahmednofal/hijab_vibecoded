@@ -2,6 +2,7 @@
 
 import os
 import time
+import ssl
 import urllib.request
 from multiprocessing import Queue, Event
 import numpy as np
@@ -22,10 +23,11 @@ def _ensure_model():
         log(f"Downloading selfie_segmenter model...")
         try:
             urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-            log(f"Model downloaded to {MODEL_PATH}")
-        except Exception as e:
-            log(f"Failed to download model: {e}")
-            raise
+        except Exception:
+            log("SSL download failed, retrying with unverified context...")
+            ctx = ssl._create_unverified_context()
+            urllib.request.urlretrieve(MODEL_URL, MODEL_PATH, context=ctx)
+        log(f"Model downloaded to {MODEL_PATH}")
 
 
 def segmentation_worker(
