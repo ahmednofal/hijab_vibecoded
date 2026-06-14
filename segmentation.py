@@ -113,6 +113,7 @@ def segmentation_worker(
         options = vision.PoseLandmarkerOptions(
             base_options=base_options,
             running_mode=vision.RunningMode.IMAGE,
+            num_poses=5,
             min_pose_detection_confidence=0.5,
             min_tracking_confidence=0.5,
         )
