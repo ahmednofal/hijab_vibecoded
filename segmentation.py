@@ -1,7 +1,9 @@
-"""Segmentation worker using YOLOv8 for multi-person detection."""
+"""Segmentation worker using MediaPipe Tasks PoseLandmarker for multi-person body detection."""
 
 import os
 import time
+import ssl
+import urllib.request
 from multiprocessing import Queue, Event
 import numpy as np
 import cv2
@@ -11,6 +13,76 @@ _LOG_FILE = os.path.join(os.getcwd(), 'segmentation_debug.log')
 def log(msg):
     with open(_LOG_FILE, 'a') as f:
         f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+
+MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'pose_landmarker_lite.task')
+_MIN_MODEL_SIZE = 100000
+
+_FACE_LANDMARK_IDS = list(range(0, 11))  # nose, eyes, ears, mouth
+
+
+def _model_valid():
+    if not os.path.exists(MODEL_PATH):
+        return False
+    try:
+        return os.path.getsize(MODEL_PATH) > _MIN_MODEL_SIZE
+    except OSError:
+        return False
+
+
+def _ensure_model():
+    if _model_valid():
+        log(f"Pose model exists ({os.path.getsize(MODEL_PATH)} bytes)")
+        return
+    log("Downloading pose_landmarker_lite model...")
+    try:
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+    except Exception:
+        log("SSL download failed, retrying with unverified context...")
+        ctx = ssl._create_unverified_context()
+        resp = urllib.request.urlopen(MODEL_URL, context=ctx)
+        with open(MODEL_PATH, 'wb') as f:
+            f.write(resp.read())
+    size = os.path.getsize(MODEL_PATH)
+    log(f"Model downloaded ({size} bytes)")
+
+
+def _body_mask_from_landmarks(landmarks, img_w, img_h, body_pad=0.15):
+    """Create a body mask from pose landmarks using bounding box."""
+    xs = [lm.x * img_w for lm in landmarks]
+    ys = [lm.y * img_h for lm in landmarks]
+    x1, x2 = min(xs), max(xs)
+    y1, y2 = min(ys), max(ys)
+    bw = x2 - x1
+    bh = y2 - y1
+    pad_x = int(bw * body_pad)
+    pad_y = int(bh * body_pad)
+    x1 = max(0, int(x1) - pad_x)
+    y1 = max(0, int(y1) - pad_y)
+    x2 = min(img_w, int(x2) + pad_x)
+    y2 = min(img_h, int(y2) + pad_y)
+    mask = np.zeros((img_h, img_w), dtype=np.uint8)
+    mask[y1:y2, x1:x2] = 1
+    return mask
+
+
+def _face_mask_from_landmarks(landmarks, img_w, img_h, face_expand=0.5):
+    """Create a face mask from face landmark indices."""
+    xs = [landmarks[i].x * img_w for i in _FACE_LANDMARK_IDS]
+    ys = [landmarks[i].y * img_h for i in _FACE_LANDMARK_IDS]
+    x1, x2 = min(xs), max(xs)
+    y1, y2 = min(ys), max(ys)
+    fw = x2 - x1
+    fh = y2 - y1
+    expand_x = int(fw * face_expand)
+    expand_y = int(fh * face_expand)
+    x1 = max(0, int(x1) - expand_x)
+    y1 = max(0, int(y1) - expand_y)
+    x2 = min(img_w, int(x2) + expand_x)
+    y2 = min(img_h, int(y2) + expand_y)
+    mask = np.zeros((img_h, img_w), dtype=np.uint8)
+    mask[y1:y2, x1:x2] = 1
+    return mask
 
 
 def segmentation_worker(
@@ -24,24 +96,38 @@ def segmentation_worker(
 
     log(f"Starting segmentation worker (scale={scale_factor})")
 
-    # Load YOLO model
+    # Download model if needed
     try:
-        from ultralytics import YOLO
-        model = YOLO('yolov8n-seg.pt')
-        log("YOLOv8-seg model loaded")
+        _ensure_model()
     except Exception as e:
-        log(f"CRITICAL: Failed to load YOLO model: {e}")
+        log(f"CRITICAL: Model not available: {e}")
         return
 
-    # Load face cascade
+    # Import mediapipe tasks API
     try:
-        face_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-        )
-        log("Face cascade loaded")
+        from mediapipe.tasks import python
+        from mediapipe.tasks.python import vision
+        import mediapipe as mp
+        log("MediaPipe Tasks API imported successfully")
     except Exception as e:
-        log(f"WARNING: Face cascade failed: {e}")
-        face_cascade = None
+        log(f"CRITICAL: Failed to import MediaPipe Tasks API: {e}")
+        return
+
+    # Initialize PoseLandmarker
+    try:
+        base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
+        options = vision.PoseLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.IMAGE,
+            min_pose_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+            output_segmentations=False,
+        )
+        landmarker = vision.PoseLandmarker.create_from_options(options)
+        log("PoseLandmarker initialized")
+    except Exception as e:
+        log(f"Failed to initialize PoseLandmarker: {e}")
+        return
 
     try:
         frame_count = 0
@@ -55,93 +141,55 @@ def segmentation_worker(
                 frame = None
                 while not stop_event.is_set():
                     try:
-                        frame = input_queue.get(timeout=0.1)
+                        frame = input_queue.get(timeout=0.05)
                     except:
                         break
                 if frame is None:
                     continue
 
-                orig_height, orig_width = frame.shape[:2]
-
-                if frame_count == 0:
-                    log(f"First frame received: {orig_width}x{orig_height}")
+                orig_h, orig_w = frame.shape[:2]
 
                 # Run inference every 3rd frame; reuse last mask for skipped frames
                 if inf_count % 3 == 0:
-                    # Downscale for faster processing
                     if scale_factor < 1.0:
-                        small_frame = cv2.resize(
+                        small = cv2.resize(
                             frame, None, fx=scale_factor, fy=scale_factor,
                             interpolation=cv2.INTER_LINEAR
                         )
                     else:
-                        small_frame = frame
+                        small = frame
 
-                    h, w = small_frame.shape[:2]
+                    sh, sw = small.shape[:2]
+                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=small)
+                    result = landmarker.detect(mp_image)
 
-                    # YOLO inference at reduced resolution
-                    results = model(small_frame, conf=0.3, iou=0.5, verbose=False, imgsz=320)
+                    combined = np.zeros((sh, sw), dtype=np.uint8)
+                    if result.pose_landmarks:
+                        for pose_lm in result.pose_landmarks:
+                            body = _body_mask_from_landmarks(pose_lm, sw, sh)
+                            face = _face_mask_from_landmarks(pose_lm, sw, sh)
+                            combined = np.maximum(combined, body & (1 - face))
 
-                    # Combine person masks into one binary mask
-                    combined = np.zeros((h, w), dtype=np.uint8)
-                    num_persons = 0
-                    if results[0].masks is not None:
-                        classes = results[0].boxes.cls.cpu().numpy()
-                        for i, mask_tensor in enumerate(results[0].masks.data):
-                            if classes[i] != 0:  # class 0 = person
-                                continue
-                            mask_np = mask_tensor.cpu().numpy()
-                            if mask_np.shape != (h, w):
-                                mask_np = cv2.resize(
-                                    mask_np, (w, h), interpolation=cv2.INTER_NEAREST
-                                )
-                            combined = np.maximum(combined, (mask_np > 0.5).astype(np.uint8))
-                            num_persons += 1
+                    if frame_count == 0:
+                        log(f"Detected {len(result.pose_landmarks) if result.pose_landmarks else 0} persons")
 
-                    if num_persons == 0 and frame_count == 0:
-                        log("No persons detected in first frame")
-
-                    # Face detection — remove face areas from body mask
-                    if face_cascade is not None and num_persons > 0:
-                        try:
-                            gray = cv2.cvtColor(small_frame, cv2.COLOR_RGB2GRAY)
-                            faces = face_cascade.detectMultiScale(
-                                gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
-                            )
-                            if len(faces) > 0:
-                                for (fx, fy, fw, fh) in faces:
-                                    expand = 0.5
-                                    fx2 = max(0, int(fx - fw * expand))
-                                    fy2 = max(0, int(fy - fh * expand))
-                                    rw = min(w - fx2, int(fw * (1 + 2 * expand)))
-                                    rh = min(h - fy2, int(fh * (1 + 2 * expand)))
-                                    combined[fy2:fy2+rh, fx2:fx2+rw] = 0
-                                if frame_count == 0:
-                                    log(f"Excluded {len(faces)} faces")
-                        except Exception as e:
-                            if frame_count == 0:
-                                log(f"Face detection error: {e}")
-
-                    # Upscale mask back to original size
+                    # Upscale to original size
                     if scale_factor < 1.0:
                         combined = cv2.resize(
-                            combined, (orig_width, orig_height),
+                            combined, (orig_w, orig_h),
                             interpolation=cv2.INTER_NEAREST
                         )
 
                     last_mask = combined
+                    inf_count += 1
 
                     if frame_count == 0:
                         body_pixels = int(combined.sum())
-                        total_pixels = combined.size
-                        log(f"First mask: body={body_pixels}/{total_pixels} ({100.0 * body_pixels / total_pixels:.1f}%)")
+                        log(f"First mask: body={body_pixels}/{orig_w*orig_h} ({100.0*body_pixels/(orig_w*orig_h):.1f}%)")
 
-                    inf_count += 1
-                    # Log inference FPS
                     if inf_count % 10 == 0:
                         elapsed = time.time() - start_time
-                        fps = inf_count / elapsed
-                        log(f"Inference FPS: {fps:.2f}")
+                        log(f"Inference FPS: {inf_count / elapsed:.2f}")
 
                 # Reuse last mask for skipped frames
                 if last_mask is not None:
@@ -157,6 +205,7 @@ def segmentation_worker(
                 time.sleep(0.1)
 
     except Exception as e:
-        log(f"Fatal error in segmentation worker: {e}")
+        log(f"Fatal error: {e}")
     finally:
+        landmarker.close()
         log("Segmentation worker stopped")

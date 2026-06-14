@@ -26,4 +26,5 @@ capture_debug*
 *_output.log
 segmentation_debug*
 selfie_segmenter.tflite
+pose_landmarker_*.task
 yolov8*.pt
