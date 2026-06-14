@@ -21,7 +21,15 @@ class _Tee:
 
 def setup_logging(suffix="console"):
     path = os.path.join(os.getcwd(), f'{suffix}_output.log')
-    log_file = open(path, 'w', encoding='utf-8')
+    try:
+        log_file = open(path, 'w', encoding='utf-8')
+    except:
+        try:
+            path = os.path.join(os.environ.get('TEMP', os.path.expanduser('~')), f'{suffix}_output.log')
+            log_file = open(path, 'w', encoding='utf-8')
+        except:
+            print(f"[Logging] Could not open log file, continuing with console only")
+            return
     sys.stdout = _Tee(sys.stdout, log_file)
     sys.stderr = _Tee(sys.stderr, log_file)
     print(f"[Logging] Output also written to {path}")
