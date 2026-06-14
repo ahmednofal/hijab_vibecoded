@@ -34,6 +34,9 @@ def segmentation_worker(
     stop_event: Event,
     scale_factor: float = 0.5
 ):
+    from logging_setup import setup_logging
+    setup_logging("segmentation")
+
     log(f"Starting segmentation worker (scale={scale_factor})")
 
     # Import mediapipe tasks API

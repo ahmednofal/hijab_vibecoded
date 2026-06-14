@@ -15,6 +15,8 @@ os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "0")
 import sys
 import signal
 import argparse
+
+from logging_setup import setup_logging
 from multiprocessing import Process, Queue, Event
 
 from capture_windows import capture_worker_windows, list_windows_monitors
@@ -157,6 +159,8 @@ class HijabOverlay:
 
 def main():
     """Application entry point."""
+    setup_logging()
+
     parser = argparse.ArgumentParser(description='Hijab by Copilot')
     parser.add_argument('--test', action='store_true', help='Show animated test rectangle instead of running segmentation')
     parser.add_argument('--record', action='store_true', help='Save debug video and auto-close after 30s')

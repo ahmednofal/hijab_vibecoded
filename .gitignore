@@ -23,5 +23,6 @@ Thumbs.db
 # Artifacts
 *.iso
 capture_debug*
+*_output.log
 segmentation_debug*
 selfie_segmenter.tflite

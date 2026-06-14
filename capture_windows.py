@@ -60,6 +60,9 @@ def capture_worker_windows(output_queue: Queue, stop_event: Event, monitor_index
         monitor_index: Which monitor to capture (0 = primary)
         record: Save debug video to disk
     """
+    from logging_setup import setup_logging
+    setup_logging("capture")
+
     print(f"[Capture] Starting Windows capture worker for monitor {monitor_index}")
     
     # Test capture method
