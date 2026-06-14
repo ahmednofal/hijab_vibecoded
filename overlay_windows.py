@@ -1,6 +1,11 @@
 """Windows-specific transparent overlay window using PyQt6."""
 
+import os
 import numpy as np
+
+# Suppress Qt's DPI awareness context error ("Access is denied")
+os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "0")
+
 from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPainter, QColor, QImage
