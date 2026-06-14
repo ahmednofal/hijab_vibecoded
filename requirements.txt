@@ -6,3 +6,4 @@ Pillow>=10.0.0
 scikit-image>=0.21.0
 mss>=9.0.1
 pywin32>=306
+ultralytics>=8.0.0
