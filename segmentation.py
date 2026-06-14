@@ -1,4 +1,4 @@
-"""Segmentation worker using HOG people detector for multi-person body masks."""
+"""Segmentation worker using YOLOv8 detection for multi-scale multi-person body masks."""
 
 import os
 import time
@@ -17,23 +17,23 @@ def segmentation_worker(
     input_queue: Queue,
     output_queue: Queue,
     stop_event: Event,
-    scale_factor: float = 0.5
+    scale_factor: float = 0.25
 ):
     from logging_setup import setup_logging
     setup_logging("segmentation")
 
     log(f"Starting segmentation worker (scale={scale_factor})")
 
-    # Initialize HOG people detector
+    # Load YOLO detection model
     try:
-        hog = cv2.HOGDescriptor()
-        hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
-        log("HOG people detector initialized")
+        from ultralytics import YOLO
+        model = YOLO('yolov8n.pt')
+        log("YOLOv8n detection model loaded")
     except Exception as e:
-        log(f"CRITICAL: Failed to initialize HOG detector: {e}")
+        log(f"CRITICAL: Failed to load YOLO model: {e}")
         return
 
-    # Initialize face cascade
+    # Load face cascade
     try:
         face_cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
@@ -46,8 +46,8 @@ def segmentation_worker(
     try:
         frame_count = 0
         start_time = time.time()
-        hog_interval = 0.3
-        last_hog_time = 0.0
+        detect_interval = 0.4
+        last_detect_time = 0.0
         last_mask = None
 
         while not stop_event.is_set():
@@ -63,10 +63,10 @@ def segmentation_worker(
                     log(f"First frame: {orig_w}x{orig_h}")
 
                 now = time.time()
-                if (now - last_hog_time) >= hog_interval:
-                    last_hog_time = now
+                if (now - last_detect_time) >= detect_interval:
+                    last_detect_time = now
 
-                    # Downscale for speed
+                    # Downscale
                     if scale_factor < 1.0:
                         small = cv2.resize(
                             frame, None, fx=scale_factor, fy=scale_factor,
@@ -76,28 +76,42 @@ def segmentation_worker(
                         small = frame
 
                     sh, sw = small.shape[:2]
-                    gray = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
 
-                    # HOG people detection
-                    boxes, _ = hog.detectMultiScale(
-                        gray, winStride=(4, 4), padding=(8, 8), scale=1.05
-                    )
+                    # YOLO detection at low resolution
+                    results = model(small, conf=0.25, iou=0.5, verbose=False, imgsz=192)
 
-                    # Create body mask from bounding boxes
+                    # Create body mask from person bounding boxes (class 0)
                     combined = np.zeros((sh, sw), dtype=np.uint8)
-                    for (x, y, w, h) in boxes:
-                        # Expand bounding box upward (head may be partially detected)
-                        exp_y = max(0, y - int(h * 0.15))
-                        exp_h = min(sh - exp_y, h + int(h * 0.15))
-                        exp_x = max(0, x - int(w * 0.1))
-                        exp_w = min(sw - exp_x, w + int(w * 0.1))
-                        combined[exp_y:exp_y+exp_h, exp_x:exp_x+exp_w] = 1
+                    num_persons = 0
+                    if results[0].boxes is not None:
+                        boxes = results[0].boxes.xyxy.cpu().numpy()
+                        classes = results[0].boxes.cls.cpu().numpy()
+                        for box, cls in zip(boxes, classes):
+                            if cls != 0:
+                                continue
+                            x1, y1, x2, y2 = box.astype(int)
+                            # Clip to image bounds
+                            x1 = max(0, x1)
+                            y1 = max(0, y1)
+                            x2 = min(sw, x2)
+                            y2 = min(sh, y2)
+                            # Expand box slightly for loose fit
+                            bw, bh = x2 - x1, y2 - y1
+                            pad_x = int(bw * 0.1)
+                            pad_y = int(bh * 0.15)
+                            x1 = max(0, x1 - pad_x)
+                            y1 = max(0, y1 - pad_y)
+                            x2 = min(sw, x2 + pad_x)
+                            y2 = min(sh, y2 + pad_y)
+                            combined[y1:y2, x1:x2] = 1
+                            num_persons += 1
 
                     # Face detection — remove face areas from body mask
-                    if face_cascade is not None and len(boxes) > 0:
+                    if face_cascade is not None and num_persons > 0:
                         try:
+                            gray = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
                             faces = face_cascade.detectMultiScale(
-                                gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20)
+                                gray, scaleFactor=1.1, minNeighbors=5, minSize=(15, 15)
                             )
                             for (fx, fy, fw, fh) in faces:
                                 expand = 0.5
@@ -108,7 +122,7 @@ def segmentation_worker(
                                 combined[fy2:fy2+rh, fx2:fx2+rw] = 0
                             if frame_count == 0:
                                 log(f"Excluded {len(faces)} faces")
-                        except Exception as e:
+                        except Exception:
                             pass
 
                     # Upscale to original size
@@ -121,22 +135,22 @@ def segmentation_worker(
                     last_mask = combined
 
                     if frame_count == 0:
-                        log(f"Detected {len(boxes)} persons")
+                        log(f"Detected {num_persons} persons")
                         p = int(combined.sum())
                         t = orig_w * orig_h
                         log(f"First mask: body={p}/{t} ({100.0*p/t:.1f}%)")
 
-                    if frame_count > 0 and frame_count % 30 == 0:
-                        elapsed = now - start_time
-                        fps = frame_count / elapsed
-                        log(f"Processing FPS: {fps:.2f}")
-
-                # Push latest mask (even if HOG didn't run — reuse last)
+                # Push latest mask every frame (reuse between detections)
                 if last_mask is not None:
                     try:
                         output_queue.put(last_mask, block=False)
                     except:
                         pass
+
+                if frame_count > 0 and frame_count % 50 == 0:
+                    elapsed = now - start_time
+                    fps = frame_count / elapsed
+                    log(f"Frame FPS: {fps:.2f}")
 
                 frame_count += 1
 
