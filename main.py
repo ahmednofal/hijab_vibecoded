@@ -97,7 +97,7 @@ class HijabOverlay:
             self.segmentation_process = Process(
                 target=segmentation_worker,
                 args=(self.capture_queue, self.mask_queue, self.stop_event),
-                kwargs={'scale_factor': 0.25},
+                kwargs={'scale_factor': 0.5},
                 daemon=True
             )
             self.segmentation_process.start()
