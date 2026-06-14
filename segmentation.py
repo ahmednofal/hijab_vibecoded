@@ -121,7 +121,6 @@ def segmentation_worker(
             running_mode=vision.RunningMode.IMAGE,
             min_pose_detection_confidence=0.5,
             min_tracking_confidence=0.5,
-            output_segmentations=False,
         )
         landmarker = vision.PoseLandmarker.create_from_options(options)
         log("PoseLandmarker initialized")
