@@ -136,13 +136,17 @@ def segmentation_worker(
 
         while not stop_event.is_set():
             try:
-                # Drain stale frames — only keep the latest
+                # Wait for a frame, then drain stale ones non-blocking
                 frame = None
-                while not stop_event.is_set():
-                    try:
-                        frame = input_queue.get(timeout=0.05)
-                    except:
-                        break
+                try:
+                    frame = input_queue.get(timeout=0.1)
+                    while not stop_event.is_set():
+                        try:
+                            frame = input_queue.get_nowait()
+                        except:
+                            break
+                except:
+                    pass
                 if frame is None:
                     continue
 
