@@ -103,7 +103,7 @@ class HijabOverlay:
         # Start overlay window
         try:
             print("[Main] Using Windows PyQt6 overlay")
-            run_overlay_windows(self.mask_queue, monitor_index=monitor_index, test_mode=self.test_mode)
+            run_overlay_windows(self.mask_queue, screen_index=monitor_index, test_mode=self.test_mode)
         except KeyboardInterrupt:
             print("\n[Main] Keyboard interrupt received")
         except Exception as e:
