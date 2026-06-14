@@ -8,6 +8,10 @@ with a red semi-transparent hue in real-time.
 Windows-only version.
 """
 
+import os
+os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "0")
+os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "0")
+
 import sys
 import signal
 import argparse
