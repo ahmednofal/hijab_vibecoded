@@ -135,6 +135,31 @@ def segmentation_worker(
                     continue
                 binary_mask = (person_conf > 0.5).astype(np.uint8)
 
+                # Face detection — remove face area from person mask
+                try:
+                    gray = cv2.cvtColor(small_frame, cv2.COLOR_RGB2GRAY)
+                    face_cascade = cv2.CascadeClassifier(
+                        cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+                    )
+                    faces = face_cascade.detectMultiScale(
+                        gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+                    )
+                    if len(faces) > 0:
+                        face_mask = np.zeros(binary_mask.shape, dtype=np.uint8)
+                        for (x, y, w, h) in faces:
+                            expand = 0.5
+                            x = max(0, int(x - w * expand))
+                            y = max(0, int(y - h * expand))
+                            rw = min(binary_mask.shape[1] - x, int(w * (1 + 2 * expand)))
+                            rh = min(binary_mask.shape[0] - y, int(h * (1 + 2 * expand)))
+                            face_mask[y:y+rh, x:x+rw] = 1
+                        binary_mask = binary_mask & (1 - face_mask)
+                        if frame_count == 0:
+                            log(f"Detected {len(faces)} faces, removed from mask")
+                except Exception as e:
+                    if frame_count == 0:
+                        log(f"Face detection unavailable: {e}")
+
                 # Upscale mask back to original size if needed
                 if scale_factor < 1.0:
                     binary_mask = cv2.resize(

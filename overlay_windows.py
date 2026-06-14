@@ -153,9 +153,9 @@ class TransparentOverlayWindows(QWidget):
                                 order=0, preserve_range=True, anti_aliasing=False)
                     mask = mask.astype(np.uint8)
                 
-                # Create a red overlay where mask is background (inverted: cover everything except person)
+                # Create a red overlay where mask is person body (inverted: cover person except face)
                 overlay = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.uint8)
-                overlay[mask <= 0] = [0, 0, 255, 128]  # Red with 50% transparency (RGBA) on background
+                overlay[mask > 0] = [0, 0, 255, 128]  # Red with 50% transparency (RGBA) on person body
                 
                 # Convert to QImage and draw
                 height, width = overlay.shape[:2]
