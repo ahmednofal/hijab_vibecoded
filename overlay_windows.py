@@ -12,13 +12,14 @@ import ctypes
 class TransparentOverlayWindows(QWidget):
     """Fullscreen transparent overlay that renders person masks in red (Windows version)."""
     
-    def __init__(self, mask_queue: Queue, screen_index: int = 0, test_mode: bool = False):
+    def __init__(self, mask_queue: Queue, screen_index: int = 0, test_mode: bool = False, record: bool = False):
         super().__init__()
         self.mask_queue = mask_queue
         self.screen_index = screen_index
         self.current_mask = None
         self.screen_geometry = None
         self.test_mode = test_mode
+        self.record = record
         self.rect_x_offset = 0
         self.rect_width = 200
         
@@ -29,11 +30,12 @@ class TransparentOverlayWindows(QWidget):
         self.update_timer.timeout.connect(self.update_mask)
         self.update_timer.start(33)  # ~30 FPS
 
-        # Auto-close after 30 seconds (debug recording duration)
-        self.close_timer = QTimer(self)
-        self.close_timer.setSingleShot(True)
-        self.close_timer.timeout.connect(self.close_and_quit)
-        self.close_timer.start(30000)  # 30 seconds
+        # Auto-close only in record mode (debug recording duration)
+        if self.record:
+            self.close_timer = QTimer(self)
+            self.close_timer.setSingleShot(True)
+            self.close_timer.timeout.connect(self.close_and_quit)
+            self.close_timer.start(30000)  # 30 seconds
         
         print("[Overlay] Windows transparent overlay initialized")
     
@@ -162,7 +164,7 @@ class TransparentOverlayWindows(QWidget):
         painter.end()
 
 
-def run_overlay_windows(mask_queue: Queue, screen_index: int = 0, test_mode: bool = False):
+def run_overlay_windows(mask_queue: Queue, screen_index: int = 0, test_mode: bool = False, record: bool = False):
     """
     Run the Windows transparent overlay window.
     
@@ -170,6 +172,7 @@ def run_overlay_windows(mask_queue: Queue, screen_index: int = 0, test_mode: boo
         mask_queue: Queue containing person segmentation masks
         screen_index: Which monitor to use (0 = primary)
         test_mode: Show animated rectangle instead of segmentation mask
+        record: Auto-close after 30s (for debug recording)
     """
     print("[Overlay] Starting Windows overlay...")
     
@@ -179,7 +182,7 @@ def run_overlay_windows(mask_queue: Queue, screen_index: int = 0, test_mode: boo
         app = QApplication(sys.argv)
     
     # Create and show overlay window
-    overlay = TransparentOverlayWindows(mask_queue, screen_index, test_mode)
+    overlay = TransparentOverlayWindows(mask_queue, screen_index, test_mode, record)
     
     overlay.showFullScreen()
     

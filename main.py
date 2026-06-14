@@ -21,7 +21,7 @@ from segmentation import segmentation_worker
 class HijabOverlay:
     """Main application orchestrator."""
     
-    def __init__(self, test_mode=False):
+    def __init__(self, test_mode=False, record=False):
         # Queues for inter-process communication
         self.capture_queue = Queue(maxsize=2)
         self.mask_queue = Queue(maxsize=2)
@@ -33,6 +33,7 @@ class HijabOverlay:
         self.capture_process = None
         self.segmentation_process = None
         self.test_mode = test_mode
+        self.record = record
     
     def select_monitor(self):
         """Detect monitors using MSS and select the primary one."""
@@ -70,7 +71,8 @@ class HijabOverlay:
         print()
         
         mode_name = "TEST MODE" if self.test_mode else "SEGMENTATION MODE"
-        print(f"[Main] {mode_name}:")
+        record_label = "Recording" if self.record else "Live"
+        print(f"[Main] {mode_name} ({record_label}):")
         print(f"[Main] - {'Animated red rectangle (no segmentation)' if self.test_mode else 'Capturing screen → segmenting → overlaying'}")
 
         # Start capture worker
@@ -78,6 +80,7 @@ class HijabOverlay:
         self.capture_process = Process(
             target=capture_worker_windows,
             args=(self.capture_queue, self.stop_event, monitor_index),
+            kwargs={'record': self.record},
             daemon=True
         )
         self.capture_process.start()
@@ -103,7 +106,7 @@ class HijabOverlay:
         # Start overlay window
         try:
             print("[Main] Using Windows PyQt6 overlay")
-            run_overlay_windows(self.mask_queue, screen_index=monitor_index, test_mode=self.test_mode)
+            run_overlay_windows(self.mask_queue, screen_index=monitor_index, test_mode=self.test_mode, record=self.record)
         except KeyboardInterrupt:
             print("\n[Main] Keyboard interrupt received")
         except Exception as e:
@@ -152,8 +155,9 @@ def main():
     """Application entry point."""
     parser = argparse.ArgumentParser(description='Hijab by Copilot')
     parser.add_argument('--test', action='store_true', help='Show animated test rectangle instead of running segmentation')
+    parser.add_argument('--record', action='store_true', help='Save debug video and auto-close after 30s')
     args = parser.parse_args()
-    app = HijabOverlay(test_mode=args.test)
+    app = HijabOverlay(test_mode=args.test, record=args.record)
     app.start()
 
 

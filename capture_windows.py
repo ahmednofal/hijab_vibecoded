@@ -50,7 +50,7 @@ def capture_windows(monitor_index: int = 0):
         return None
 
 
-def capture_worker_windows(output_queue: Queue, stop_event: Event, monitor_index: int = 0):
+def capture_worker_windows(output_queue: Queue, stop_event: Event, monitor_index: int = 0, record: bool = False):
     """
     Windows-specific capture worker that continuously captures the screen.
     
@@ -58,6 +58,7 @@ def capture_worker_windows(output_queue: Queue, stop_event: Event, monitor_index
         output_queue: Queue to put captured frames into
         stop_event: Event to signal when to stop capturing
         monitor_index: Which monitor to capture (0 = primary)
+        record: Save debug video to disk
     """
     print(f"[Capture] Starting Windows capture worker for monitor {monitor_index}")
     
@@ -77,9 +78,10 @@ def capture_worker_windows(output_queue: Queue, stop_event: Event, monitor_index
     capture_delay = 0.01  # 10ms delay for ~60fps max
 
     video_writer = None
-    video_path = os.path.join(os.getcwd(), 'capture_debug.avi')
-    if HAS_CV2:
-        print(f"[Capture] Recording debug video to: {video_path}")
+    if record:
+        video_path = os.path.join(os.getcwd(), 'capture_debug.avi')
+        if HAS_CV2:
+            print(f"[Capture] Recording debug video to: {video_path}")
 
     while not stop_event.is_set():
         try:
@@ -91,8 +93,8 @@ def capture_worker_windows(output_queue: Queue, stop_event: Event, monitor_index
 
             frame_count += 1
 
-            # Write every frame to video
-            if HAS_CV2:
+            # Write every frame to video (only in record mode)
+            if record and HAS_CV2:
                 if video_writer is None:
                     h, w = frame.shape[:2]
                     fourcc = cv2.VideoWriter_fourcc(*'MJPG')
