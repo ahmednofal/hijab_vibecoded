@@ -1,17 +1,18 @@
 """Windows-specific transparent overlay window using PyQt6."""
 
 import os
+import sys
 import numpy as np
+import ctypes
 
 # Suppress Qt's DPI awareness context error ("Access is denied")
 os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "0")
+os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "0")
 
 from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPainter, QColor, QImage
 from multiprocessing import Queue
-import sys
-import ctypes
 
 
 class TransparentOverlayWindows(QWidget):
@@ -184,6 +185,11 @@ def run_overlay_windows(mask_queue: Queue, screen_index: int = 0, test_mode: boo
     # Create QApplication if it doesn't exist
     app = QApplication.instance()
     if app is None:
+        # Set DPI awareness before QApplication construction to suppress Windows warning
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            pass
         app = QApplication(sys.argv)
     
     # Create and show overlay window
