@@ -13,6 +13,7 @@ def simulation_worker(
     rect_width: int = 400,
     speed: int = 10,
     fps: int = 30,
+    capture_mask_queue: Queue = None,
 ):
     """
     Generate moving-rectangle masks that simulate semantic segmentation output.
@@ -22,13 +23,16 @@ def simulation_worker(
     wraps around the screen edge so the animation is continuous.
 
     Args:
-        output_queue: Queue to put masks into (consumed by the overlay).
-        stop_event:   Multiprocessing Event; worker exits when set.
-        screen_width: Pixel width of the target monitor.
-        screen_height: Pixel height of the target monitor.
-        rect_width:   Width of the simulated segmentation rectangle in pixels.
-        speed:        Pixels to advance per frame.
-        fps:          Target output frame-rate.
+        output_queue:        Queue to put masks into (consumed by the overlay).
+        stop_event:          Multiprocessing Event; worker exits when set.
+        screen_width:        Pixel width of the target monitor.
+        screen_height:       Pixel height of the target monitor.
+        rect_width:          Width of the simulated segmentation rectangle in pixels.
+        speed:               Pixels to advance per frame.
+        fps:                 Target output frame-rate.
+        capture_mask_queue:  Optional Queue(maxsize=1) shared with the capture worker.
+                             Always holds the latest mask so the capture worker can
+                             zero out drawn pixels before frames reach the CV model.
     """
     print(f"[Segmentation] Simulation worker started "
           f"(screen={screen_width}x{screen_height}, rect_width={rect_width}, speed={speed})")

@@ -9,7 +9,13 @@ with a red semi-transparent hue in real-time.
 import sys
 import signal
 import os
-from multiprocessing import Process, Queue, Event
+import multiprocessing as mp
+from multiprocessing import Process
+
+# Spawn context for the capture worker: avoids inheriting the parent's open
+# GTK/Wayland file descriptors (from overlay_gtk3 import) which cause GDK to
+# crash when GLib.MainLoop starts inside a forked subprocess.
+_spawn = mp.get_context('spawn')
 from PyQt6.QtWidgets import QApplication
 
 from capture import capture_worker, is_wayland
@@ -18,46 +24,60 @@ from overlay_gtk3 import run_overlay as run_overlay_gtk3
 from overlay_x11 import run_overlay_x11
 from overlay_wayland import run_overlay_wayland
 from segmentation import simulation_worker, segmentation_worker
+from viewer import viewer_worker
 
 
 class HijabOverlay:
     """Main application orchestrator."""
     
     def __init__(self):
-        # Queues for inter-process communication
-        self.capture_queue = Queue(maxsize=2)
-        self.mask_queue = Queue(maxsize=2)
-        self.overlay_id_queue = Queue(maxsize=1)  # For sending overlay window ID
-        self.hide_signal_queue = Queue(maxsize=2)  # For capture worker to signal hide/show
-        
-        # Event to signal stop
-        self.stop_event = Event()
-        
+        # All IPC objects are created with the spawn context so they can be
+        # passed to both fork-based (segmentation, viewer) and spawn-based
+        # (capture) processes.  Spawn-context primitives use OS-level semaphores
+        # that work across any process-creation method.
+        self.capture_queue     = _spawn.Queue(maxsize=2)
+        self.mask_queue        = _spawn.Queue(maxsize=2)
+        self.overlay_id_queue  = _spawn.Queue(maxsize=1)
+        self.hide_signal_queue = _spawn.Queue(maxsize=2)
+        self.capture_mask_queue = _spawn.Queue(maxsize=1)
+        self.viewer_queue      = _spawn.Queue(maxsize=2)
+        self.stop_event        = _spawn.Event()
+
+        # Clean capture synchronization: the capture worker asks the overlay
+        # to go transparent so PipeWire grabs a frame without the red overlay.
+        self.request_clean_event = _spawn.Event()  # capture worker → overlay: "go transparent"
+        self.overlay_clear_event = _spawn.Event()  # overlay → capture worker: "I'm transparent"
+
         # Processes
         self.capture_process = None
         self.segmentation_process = None
+        self.viewer_process = None
     
     def select_monitor(self):
         """Detect monitors and select the internal one (not HP external).
-        
+
         Returns:
-            Tuple of (monitor_index, geometry) where geometry is (x, y, width, height)
+            Tuple of (monitor_index, geometry, total_display_size) where
+            geometry is (x, y, width, height) and total_display_size is (w, h)
+            of the full virtual display bounding box.
         """
         app = QApplication.instance()
         if app is None:
             app = QApplication(sys.argv)
-        
+
         screens = app.screens()
         print(f"[Main] Detected {len(screens)} monitor(s):")
-        
+
         internal_monitor = None
         internal_geometry = None
+        x2_max = y2_max = 0
+        x_min = y_min = 0
         for i, screen in enumerate(screens):
             geom = screen.geometry()
             name = screen.name()
             manufacturer = screen.manufacturer()
             model = screen.model()
-            
+
             info = f"  [{i}] {name}: {geom.width()}x{geom.height()}"
             if manufacturer:
                 info += f" ({manufacturer}"
@@ -65,27 +85,34 @@ class HijabOverlay:
                 info += f" {model}" if manufacturer else f" ({model}"
             if manufacturer or model:
                 info += ")"
-            
+
             print(info)
-            
+
+            x2_max = max(x2_max, geom.x() + geom.width())
+            y2_max = max(y2_max, geom.y() + geom.height())
+            x_min  = min(x_min,  geom.x())
+            y_min  = min(y_min,  geom.y())
+
             # Skip HP external monitors
             is_hp = 'HP' in str(manufacturer).upper() or 'HP' in str(model).upper() or 'HP' in str(name).upper()
-            
+
             if not is_hp and internal_monitor is None:
                 internal_monitor = i
                 internal_geometry = (geom.x(), geom.y(), geom.width(), geom.height())
                 print(f"       ^ Internal monitor (will use this)")
             elif is_hp:
                 print(f"       ^ HP external (skipping)")
-        
+
+        total_display_size = (x2_max - x_min, y2_max - y_min)
+
         if internal_monitor is None:
             print("[Main] WARNING: Could not identify internal monitor, using primary (0)")
             internal_monitor = 0
             if screens:
                 geom = screens[0].geometry()
                 internal_geometry = (geom.x(), geom.y(), geom.width(), geom.height())
-        
-        return internal_monitor, internal_geometry
+
+        return internal_monitor, internal_geometry, total_display_size
     
     def start(self):
         """Start all worker processes and the overlay."""
@@ -100,10 +127,11 @@ class HijabOverlay:
         self.check_requirements()
         
         # Select monitor (internal, not HP external)
-        monitor_index, monitor_geometry = self.select_monitor()
+        monitor_index, monitor_geometry, total_display_size = self.select_monitor()
         print(f"[Main] Using monitor {monitor_index}")
         if monitor_geometry:
             print(f"[Main] Monitor geometry: x={monitor_geometry[0]}, y={monitor_geometry[1]}, {monitor_geometry[2]}x{monitor_geometry[3]}")
+        print(f"[Main] Total display size (logical): {total_display_size[0]}x{total_display_size[1]}")
         print()
 
         screen_width  = monitor_geometry[2] if monitor_geometry else 1920
@@ -125,20 +153,39 @@ class HijabOverlay:
 
         # -----------------------------------------------------------------------
         # Component 2 – Live screen capture
-        #   Frames go into capture_queue for the (future) real segmentation model.
-        #   On X11 the overlay window ID is used to black-out the overlay region
-        #   before the frame reaches the model, preventing a feedback loop.
-        #   On Wayland the overlay is excluded by design in simulation mode
-        #   (masks are generated independently, not from captured frames).
+        #   Frames go into capture_queue for the CV model.
+        #   Overlay pixels are erased from every frame before enqueueing:
+        #     X11:     overlay window XID used to blackout its geometry
+        #     Wayland: latest mask from capture_mask_queue used to zero mask==1 pixels
+        #   Either way the CV model never sees what the overlay drew.
         # -----------------------------------------------------------------------
+        show_viewer = '--view' in sys.argv or os.environ.get('SHOW_CAPTURE') == '1'
+
         print("[Main] Starting capture worker...")
-        self.capture_process = Process(
+        self.capture_process = _spawn.Process(
             target=capture_worker,
             args=(self.capture_queue, self.stop_event, monitor_index,
                   self.overlay_id_queue, monitor_geometry, self.hide_signal_queue),
+            kwargs={
+                'capture_mask_queue': self.capture_mask_queue,
+                'viewer_queue': self.viewer_queue if show_viewer else None,
+                'total_display_size': total_display_size,
+                'request_clean_event': self.request_clean_event,
+                'overlay_clear_event': self.overlay_clear_event,
+            },
             daemon=True,
         )
         self.capture_process.start()
+
+        if show_viewer:
+            print("[Main] Starting live capture viewer (--view mode)...")
+            self.viewer_process = Process(
+                target=viewer_worker,
+                args=(self.viewer_queue, self.stop_event),
+                kwargs={'monitor_geometry': monitor_geometry},
+                daemon=True,
+            )
+            self.viewer_process.start()
 
         # -----------------------------------------------------------------------
         # Component 3 – Transparent overlay
@@ -186,7 +233,7 @@ class HijabOverlay:
         try:
             if backend == 'x11':
                 print("[Main] Using X11-optimized overlay")
-                run_overlay_x11(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue)
+                run_overlay_x11(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue, monitor_geometry, capture_mask_queue=self.capture_mask_queue, request_clean_event=self.request_clean_event, overlay_clear_event=self.overlay_clear_event)
             elif backend == 'wayland':
                 print("[Main] Using Wayland-optimized overlay")
                 run_overlay_wayland(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue)
@@ -203,7 +250,7 @@ class HijabOverlay:
                     run_overlay_wayland(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue)
                 else:
                     print("[Main] Using X11-optimized overlay")
-                    run_overlay_x11(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue)
+                    run_overlay_x11(self.mask_queue, self.capture_queue, self.overlay_id_queue, monitor_index, self.hide_signal_queue, capture_mask_queue=self.capture_mask_queue, request_clean_event=self.request_clean_event, overlay_clear_event=self.overlay_clear_event)
         except KeyboardInterrupt:
             print("\n[Main] Keyboard interrupt received")
         except Exception as e:
@@ -232,7 +279,12 @@ class HijabOverlay:
             if self.segmentation_process.is_alive():
                 print("[Main] Terminating segmentation process...")
                 self.segmentation_process.terminate()
-        
+
+        if self.viewer_process and self.viewer_process.is_alive():
+            self.viewer_process.join(timeout=2)
+            if self.viewer_process.is_alive():
+                self.viewer_process.terminate()
+
         print("[Main] Application stopped")
     
     def _signal_handler(self, signum, frame):
